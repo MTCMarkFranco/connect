@@ -1,0 +1,231 @@
+QUARTERLY CONNECT FLEET INSTRUCTION PACK
+
+PURPOSE
+Use GitHub Copilot CLI with /fleet to produce a full quarterly Connect draft that is strategic, evidence-backed, and aligned to the structure and tone of the past sample Connect. The workflow must combine user-supplied quarter information, user-supplied core metrics, and evidence gathered from WorkIQ across emails, Teams messages, documents, and Loop content.
+
+PREREQUISITES
+1. WorkIQ access is enabled and any required consent/EULA is already handled.
+2. The user supplies the quarter or exact date range.
+3. The user supplies the current core metrics for that quarter.
+4. Optional but helpful inputs:
+   - current priorities or themes to emphasize
+   - sensitive topics or customers to avoid naming directly
+   - any role or goal updates that should influence future-looking content
+
+REQUIRED INPUTS
+The workflow must stop and ask for missing data if either of these is not present:
+- Quarter or date range
+- Core metrics
+
+Recommended input block for each run:
+- Quarter: <required>
+- Date range: <required if quarter label alone is ambiguous>
+- Core metrics: @core metrics.txt
+
+NON-NEGOTIABLE RULES
+1. Do not invent facts, outcomes, praise, or examples.
+2. No meaningful claim may appear in the final Connect unless it is backed by evidence.
+3. Every major example must include source metadata: source type, rough date, people or group involved, and why it matters.
+4. Prefer evidence from the target quarter. If older evidence is used for context, label it clearly as prior context.
+5. Prefer paraphrased evidence over verbatim copying, especially for sensitive or customer-specific content.
+6. If evidence is weak, conflicting, or absent, surface a gap instead of filling it with generic language.
+7. The final narrative should emphasize strategic business value, customer outcomes, leadership, collaboration, growth, and culture impact.
+
+REQUIRED SEARCH COVERAGE
+The workflow must explicitly search for and report on all of the following:
+- Customer outcomes and business impact
+- Strategic value created from engagements
+- Community contributions
+- Events supported, hosted, or spoken at
+- Kudos given to others
+- Coaching delivered
+- Coaching received
+- Awards or formal recognition received
+- Setbacks, lessons learned, and growth moments
+
+Use WorkIQ searches that cover:
+- emails
+- Teams messages
+- documents
+- Loop content
+
+Helpful search concepts and synonyms:
+- community or events: community, event, meetup, technical community, hackathon, conference, tour, summit, workshop, roundtable, panel, volunteer
+- kudos given: thanks, thank you, kudos, shout-out, appreciation, appreciate, recognition, great job
+- coaching delivered: coach, mentoring, mentor, guidance, feedback, 1:1, review, helped, supported, taught
+- coaching received: feedback, mentor, coaching, advice, guidance, learned from, suggestion, recommendation
+- awards received: award, recognition, winner, nominated, spotlight, celebrated, congratulations
+- setbacks and growth: issue, challenge, risk, concern, setback, learned, lesson, adjusted, adapted, improved
+
+PARALLEL WORKSTREAMS FOR /FLEET
+When possible, split the job into these parallel workstreams:
+
+1. Metrics and strategic storyline
+   - Parse the supplied core metrics.
+   - Pull out the strongest signals on customer impact, demand, satisfaction, journey progression, opportunity creation, and role breadth.
+   - Convert raw metrics into strategic value statements without overstating causality.
+
+2. Customer impact evidence
+   - Search WorkIQ for concrete examples tied to customer value, decision-making, opportunity progression, trusted-advisor moments, follow-up actions, and measurable outcomes.
+   - Find examples that show how the work was done, not just what was delivered.
+
+3. Community and event evidence
+   - Search for community contributions, internal enablement, cross-team leadership, external events, hackathons, conferences, and hosted sessions.
+   - Capture who benefited and what changed because of the contribution.
+
+4. Recognition, kudos, and coaching evidence
+   - Find kudos given to others, coaching delivered, coaching received, and awards or recognition received.
+   - Separate giving impact from receiving recognition.
+
+5. Growth and setback evidence
+   - Search for moments where plans changed, challenges appeared, or feedback led to a stronger outcome.
+   - Identify growth signals that can support the reflection section.
+
+6. Validation and synthesis
+   - Merge all evidence.
+   - Remove duplicates.
+   - Rank evidence strength.
+   - Identify unsupported themes.
+   - Draft the final Connect only after validation is complete.
+
+EVIDENCE SCHEMA
+Every material point should map to one or more records using this schema:
+
+- claim_id: short unique identifier
+- theme: one of business-impact, customer-outcome, community, event, kudos-given, kudos-received, coaching-delivered, coaching-received, award, setback, growth, future-goal
+- section: results, setbacks-growth, future-goals, behaviors, or cross-cutting
+- claim_summary: one sentence summary of the point the draft may make
+- source_type: email, Teams, document, Loop, metric, or mixed
+- source_reference: subject, title, thread label, document name, or equivalent reference
+- date_or_period: exact date if known, otherwise rough period inside the quarter
+- people_or_orgs: key people, team, customer, or community involved
+- concrete_example: the specific action, event, decision, or outcome
+- business_or_cultural_value: why this matters strategically
+- related_metric: metric text or number if connected to the supplied metrics
+- evidence_strength: strong, medium, or weak
+- usage_guidance: how this should be used in the final draft
+- caveats: missing details, ambiguity, or sensitivity handling notes
+
+EVIDENCE QUALITY BAR
+Use these standards during validation:
+- Strong: direct evidence from first-hand artifacts, clear date, clear people, and a concrete outcome or example
+- Medium: credible evidence with partial metadata or weaker directness
+- Weak: vague praise, incomplete context, or no concrete example
+
+Do not use weak evidence for major claims unless it is explicitly labeled as tentative and paired with a follow-up question.
+
+OUTPUT PACKAGE
+Produce the final result in three parts:
+
+PART 1 - INPUT AND COVERAGE CHECK
+- Confirm the quarter used
+- Confirm that core metrics were provided
+- List which evidence domains were covered
+- List any domains with thin or missing evidence
+
+PART 2 - EVIDENCE LEDGER
+Provide a compact but detailed table or structured list with:
+- theme
+- claim_summary
+- source_type
+- source_reference
+- date_or_period
+- people_or_orgs
+- concrete_example
+- business_or_cultural_value
+- related_metric
+- evidence_strength
+- caveats
+
+PART 3 - FULL CONNECT DRAFT
+Draft a full Connect aligned to the sample structure:
+
+A. Reflect on the past
+- What results did you deliver, and how did you do it?
+
+B. Reflect on recent setbacks
+- What did you learn, and how did you grow?
+
+C. Plan for the future
+- What are your goals for the upcoming period?
+- How will your actions and behaviors help you reach your goals?
+
+Drafting guidance:
+- Write in first person.
+- Sound confident, specific, and thoughtful, not inflated.
+- Lead with business and customer outcomes.
+- Show how the work reflects Microsoft values, collaboration, leadership, and growth.
+- Use concrete examples and metrics naturally in the narrative.
+- For future goals, root the goals in the quarter's evidence and supplied priorities. If explicit future priorities were not supplied, propose grounded next-step goals and label them as recommended.
+
+MASTER /FLEET PROMPT
+Paste everything below after /fleet, then fill in the placeholders before running:
+
+Create a full quarterly Connect draft using the instruction pack below.
+
+Required inputs:
+- Quarter: <fill in>
+- Date range: <fill in if needed>
+- Core metrics: <paste in full>
+
+Optional inputs:
+- Focus themes: <optional>
+- Exclusions or sensitivity notes: <optional>
+- Current goals or priorities: <optional>
+
+Execution instructions:
+1. Validate inputs first. If the quarter/date range or core metrics are missing, stop and ask for them before doing anything else.
+2. Use WorkIQ as the primary evidence source for workplace artifacts. Search emails, Teams messages, documents, and Loop content within the selected quarter.
+3. Break the work into parallel workstreams where possible:
+   - metrics and strategic storyline
+   - customer impact evidence
+   - community and event evidence
+   - recognition, kudos, and coaching evidence
+   - growth and setback evidence
+   - final validation and synthesis
+4. Explicitly find evidence for:
+   - community contributions
+   - events
+   - kudos given
+   - coaching delivered
+   - coaching received
+   - awards received
+5. Build an evidence ledger before drafting. Every meaningful claim in the draft must map back to evidence.
+6. For each evidence item, capture:
+   - theme
+   - claim summary
+   - source type
+   - source reference
+   - date or period
+   - people or organizations involved
+   - concrete example
+   - business or cultural value
+   - related metric if applicable
+   - evidence strength
+   - caveats
+7. Validate the evidence set:
+   - remove duplicates
+   - downgrade or exclude weak evidence
+   - flag missing areas
+   - avoid unsupported causal claims
+8. Draft the Connect in first person, aligned to this structure:
+   - Reflect on the past: results delivered and how they were delivered
+   - Reflect on recent setbacks: lessons learned and growth
+   - Plan for the future: goals for the upcoming period
+   - Actions and behaviors: how those goals will be achieved
+9. Optimize for strategic business value. Show measurable customer impact, leadership, trusted-advisor behavior, collaboration, community contribution, coaching, and growth.
+10. Do not fabricate or smooth over evidence gaps. If the evidence is thin, say so and provide follow-up questions or missing-data notes.
+
+Return the result in this order:
+1. Input and coverage check
+2. Evidence ledger
+3. Gaps or follow-up questions
+4. Final Connect draft
+
+QUICK RUN TEMPLATE
+Example starter command:
+
+/fleet Create my quarterly Connect using the instruction pack in quarterly-connect-fleet-instructions.txt.
+Quarter: FY<fill in> Q<fill in>
+Core metrics:
+

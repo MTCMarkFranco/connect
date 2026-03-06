@@ -1,0 +1,8 @@
+node_modules/
+.auth/
+.env
+core-metrics.txt
+core-metrics.png
+final-metrics.md
+fleet-prompt.txt
+*Connect-Draft.md

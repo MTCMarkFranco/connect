@@ -14,10 +14,12 @@
  *   node run-connect.js --quarter FY26Q3 --headless
  *   node run-connect.js --quarter FY26Q3 --headless --date-range "Jan 1, 2026 - Mar 31, 2026"
  *   node run-connect.js --skip-scrape --quarter FY26Q3   # reuse existing final-metrics.md
+ *   node run-connect.js --skip-to-copilot --quarter FY26Q3 # jump straight to Copilot CLI
  */
 
 const { execFileSync, execSync, spawn } = require("child_process");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
 // ── Parse CLI args ─────────────────────────────────────────────────────────
@@ -30,6 +32,7 @@ const quarter = getArg("--quarter");
 const dateRange = getArg("--date-range");
 const headless = args.includes("--headless");
 const skipScrape = args.includes("--skip-scrape");
+const skipToCopilot = args.includes("--skip-to-copilot");
 
 if (!quarter) {
   console.error("Error: --quarter is required (e.g. --quarter Y26Q3)");
@@ -44,6 +47,7 @@ const FLEET_PROMPT_FILE = path.join(TEMP_DIR, "fleet-prompt.txt");
 
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
+if (!skipToCopilot) {
 // ── Step 1 & 2: Scrape Power BI + Azure OpenAI summarisation ──────────────
 if (!skipScrape) {
   console.log("═".repeat(60));
@@ -59,7 +63,7 @@ if (!skipScrape) {
     console.error("\nScraper failed. Fix the issue above and retry, or use --skip-scrape to reuse an existing final-metrics.md.");
     process.exit(1);
   }
-} else { F
+} else {
   console.log("Skipping scrape (--skip-scrape). Reusing existing final-metrics.md.");
 }
 
@@ -110,6 +114,14 @@ try {
   console.log("Could not copy to clipboard automatically. Copy the prompt from fleet-prompt.txt.");
 }
 
+} // end skipToCopilot
+
+// Verify fleet prompt exists before launching Copilot
+if (skipToCopilot && !fs.existsSync(FLEET_PROMPT_FILE)) {
+  console.error(`\nError: ${FLEET_PROMPT_FILE} not found. Run without --skip-to-copilot first.`);
+  process.exit(1);
+}
+
 // ── Step 5: Ensure Copilot CLI is authenticated ───────────────────────────
 console.log("\n" + "═".repeat(60));
 console.log("STEP 4 — Checking Copilot CLI authentication");
@@ -153,4 +165,59 @@ copilot.on("error", (err) => {
 
 copilot.on("close", (code) => {
   console.log(`\nCopilot CLI exited (code ${code}).`);
+
+  // ── Copy the generated Connect Draft from Copilot's session workspace ──
+  const sessionStateDir = path.join(os.homedir(), ".copilot", "session-state");
+  let draftSrc = null;
+
+  if (fs.existsSync(sessionStateDir)) {
+    // Find the most recently modified *Connect-Draft.md across all sessions
+    const sessions = fs.readdirSync(sessionStateDir);
+    let latestTime = 0;
+    for (const session of sessions) {
+      const filesDir = path.join(sessionStateDir, session, "files");
+      if (!fs.existsSync(filesDir)) continue;
+      for (const file of fs.readdirSync(filesDir)) {
+        if (file.endsWith("-Connect-Draft.md")) {
+          const fullPath = path.join(filesDir, file);
+          const mtime = fs.statSync(fullPath).mtimeMs;
+          if (mtime > latestTime) {
+            latestTime = mtime;
+            draftSrc = fullPath;
+          }
+        }
+      }
+    }
+  }
+
+  if (draftSrc) {
+    const draftDest = path.join(TEMP_DIR, path.basename(draftSrc));
+    fs.copyFileSync(draftSrc, draftDest);
+    console.log(`\n✓ Connect Draft copied → ${draftDest}`);
+  } else {
+    console.log("\n⚠ Could not find a Connect Draft in Copilot session workspace.");
+  }
+
+  // ── ASCII art finish ─────────────────────────────────────────────────
+  console.log(`
+  ╔══════════════════════════════════════════════════════════╗
+  ║                                                          ║
+  ║     ██████╗ ██████╗ ███╗   ███╗██████╗ ██╗     ███████╗ ║
+  ║    ██╔════╝██╔═══██╗████╗ ████║██╔══██╗██║     ██╔════╝ ║
+  ║    ██║     ██║   ██║██╔████╔██║██████╔╝██║     █████╗   ║
+  ║    ██║     ██║   ██║██║╚██╔╝██║██╔═══╝ ██║     ██╔══╝   ║
+  ║    ╚██████╗╚██████╔╝██║ ╚═╝ ██║██║     ███████╗███████╗ ║
+  ║     ╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚═╝     ╚══════╝╚══════╝ ║
+  ║                                                          ║
+  ║    ████████╗███████╗                                     ║
+  ║    ╚══██╔══╝██╔════╝                                     ║
+  ║       ██║   █████╗                                       ║
+  ║       ██║   ██╔══╝                                       ║
+  ║       ██║   ███████╗                                     ║
+  ║       ╚═╝   ╚══════╝                                     ║
+  ║                                                          ║
+  ║    Find your final output in the temp/ directory         ║
+  ║                                                          ║
+  ╚══════════════════════════════════════════════════════════╝
+`);
 });

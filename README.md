@@ -42,6 +42,9 @@ Authentication uses `DefaultAzureCredential` (Entra ID) — no API key needed.
 ```powershell
 node run-connect.js --quarter FY26Q3
 ```
+ℹ️- At the end of the run just CTRL-C Twice to get out of Github Copilot CLI and you are done!
+
+📝- Report will be in the "temp" folder
 
 ### Subsequent runs (headless)
 

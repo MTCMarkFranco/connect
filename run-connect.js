@@ -32,14 +32,17 @@ const headless = args.includes("--headless");
 const skipScrape = args.includes("--skip-scrape");
 
 if (!quarter) {
-  console.error("Error: --quarter is required (e.g. --quarter FY26Q3)");
+  console.error("Error: --quarter is required (e.g. --quarter Y26Q3)");
   process.exit(1);
 }
 
 const ROOT = __dirname;
-const FINAL_METRICS = path.join(ROOT, "final-metrics.md");
+const TEMP_DIR = path.join(ROOT, "temp");
+const FINAL_METRICS = path.join(TEMP_DIR, "final-metrics.md");
 const FLEET_INSTRUCTIONS = path.join(ROOT, "gh-cli-prompts", "quarterly-connect-fleet-instructions.txt");
-const FLEET_PROMPT_FILE = path.join(ROOT, "fleet-prompt.txt");
+const FLEET_PROMPT_FILE = path.join(TEMP_DIR, "fleet-prompt.txt");
+
+if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
 // ── Step 1 & 2: Scrape Power BI + Azure OpenAI summarisation ──────────────
 if (!skipScrape) {
@@ -56,7 +59,7 @@ if (!skipScrape) {
     console.error("\nScraper failed. Fix the issue above and retry, or use --skip-scrape to reuse an existing final-metrics.md.");
     process.exit(1);
   }
-} else {
+} else { F
   console.log("Skipping scrape (--skip-scrape). Reusing existing final-metrics.md.");
 }
 

@@ -3,12 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "description": "Playwright scraper for Power BI quarterly metrics using Edge",
-  "scripts": {
-    "scrape": "node scrape-powerbi.js",
-    "scrape:headless": "node scrape-powerbi.js --headless",
-    "connect": "node run-connect.js",
-    "connect:headless": "node run-connect.js --headless"
-  },
+
   "dependencies": {
     "@azure/identity": "^4.13.0",
     "dotenv": "^16.4.0",

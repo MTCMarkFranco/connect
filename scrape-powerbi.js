@@ -24,9 +24,10 @@ const REPORT_URL =
   "https://msit.powerbi.com/groups/me/apps/bc16e81a-2071-4f5f-8131-c2e9b7211346/reports/99396eba-3a62-499c-bd28-2165ac0a0737/ReportSectionc481b05a185bb8cce548?experience=power-bi";
 
 const AUTH_STATE_DIR = path.join(__dirname, ".auth");
-const RAW_TEXT_FILE = path.join(__dirname, "core-metrics.txt");
-const SCREENSHOT_FILE = path.join(__dirname, "core-metrics.png");
-const FINAL_OUTPUT_FILE = path.join(__dirname, "final-metrics.md");
+const TEMP_DIR = path.join(__dirname, "temp");
+const RAW_TEXT_FILE = path.join(TEMP_DIR, "core-metrics.txt");
+const SCREENSHOT_FILE = path.join(TEMP_DIR, "core-metrics.png");
+const FINAL_OUTPUT_FILE = path.join(TEMP_DIR, "final-metrics.md");
 
 // How long to wait for the report visuals to finish rendering (ms)
 const RENDER_WAIT_MS = 15_000;
@@ -47,6 +48,7 @@ function ensureDir(dir) {
 // ── Main ───────────────────────────────────────────────────────────────────
 (async () => {
   ensureDir(AUTH_STATE_DIR);
+  ensureDir(TEMP_DIR);
 
   console.log("Launching Microsoft Edge…");
   console.log(headless ? "  Mode: headless" : "  Mode: headed (visible browser)");

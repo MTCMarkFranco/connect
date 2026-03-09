@@ -40,26 +40,26 @@ Authentication uses `DefaultAzureCredential` (Entra ID) — no API key needed.
 ### Full pipeline (first run — headed browser for Power BI login)
 
 ```powershell
-npm run connect -- --quarter FY26Q3
+node run-connect.js --quarter FY26Q3
 ```
 
 ### Subsequent runs (headless)
 
 ```powershell
-npm run connect:headless -- --quarter FY26Q3
+node run-connect.js --quarter FY26Q3 --headless
 ```
 
 ### Skip scraping (reuse existing metrics)
 
 ```powershell
-node run-connect.js --skip-scrape --quarter FY26Q3
+node run-connect.js --quarter FY26Q3 --skip-scrape
 ```
 
 ### What happens
 
 1. Edge opens the Power BI report, scrapes text + screenshot
-2. Azure OpenAI (GPT-4o-mini) summarises metrics → `final-metrics.md`
-3. Fleet instructions + metrics are merged → `fleet-prompt.txt`
+2. Azure OpenAI (GPT-4o-mini) summarises metrics → `temp/final-metrics.md`
+3. Fleet instructions + metrics are merged → `temp/fleet-prompt.txt`
 4. Prompt is copied to clipboard
 5. Copilot CLI auth is verified (auto-login if needed)
 6. Copilot CLI launches with the fleet prompt pre-loaded via `copilot -i`
@@ -67,8 +67,8 @@ node run-connect.js --skip-scrape --quarter FY26Q3
 ### Scrape only
 
 ```powershell
-npm run scrape                                       # headed
-node scrape-powerbi.js --headless --quarter FY26Q3   # headless
+node scrape-powerbi.js --quarter FY26Q3              # headed
+node scrape-powerbi.js --quarter FY26Q3 --headless   # headless
 ```
 
 ## Prerequisites

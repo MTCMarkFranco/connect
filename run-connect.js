@@ -49,28 +49,7 @@ const FLEET_PROMPT_FILE = path.join(TEMP_DIR, "fleet-prompt.txt");
 
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
-// ── Word-only mode: generate final.docx from existing temp/ files and exit ─
-if (wordOnly) {
-  const sourcePath = path.join(TEMP_DIR, "Connect-Draft.md");
-
-  if (!fs.existsSync(sourcePath)) {
-    console.error(`Error: ${sourcePath} not found. Run the full pipeline first to generate the Connect Draft.`);
-    process.exit(1);
-  }
-
-  console.log(`Reading Connect Draft from → ${sourcePath}`);
-  const mdContent = fs.readFileSync(sourcePath, "utf-8");
-  const wordPath = path.join(TEMP_DIR, "final.docx");
-
-  generateWordDoc(mdContent, wordPath).then(() => {
-    console.log(`✓ Word document saved → ${wordPath}`);
-    process.exit(0);
-  }).catch((err) => {
-    console.error("Failed to generate Word document:", err.message);
-    process.exit(1);
-  });
-} else {
-// ── Full pipeline continues below ────────────────────────────────────────── ──────────────────────────────────────────────
+// ── Generate Word doc from markdown ────────────────────────────────────────
 function generateWordDoc(mdContent, outputPath) {
   const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType,
           Table, TableRow, TableCell, WidthType, BorderStyle, ShadingType } = docx;
@@ -226,6 +205,28 @@ function generateWordDoc(mdContent, outputPath) {
   });
 }
 
+// ── Word-only mode: generate final.docx from existing temp/ files and exit ─
+if (wordOnly) {
+  const sourcePath = path.join(TEMP_DIR, "Connect-Draft.md");
+
+  if (!fs.existsSync(sourcePath)) {
+    console.error(`Error: ${sourcePath} not found. Run the full pipeline first to generate the Connect Draft.`);
+    process.exit(1);
+  }
+
+  console.log(`Reading Connect Draft from → ${sourcePath}`);
+  const mdContent = fs.readFileSync(sourcePath, "utf-8");
+  const wordPath = path.join(TEMP_DIR, "final.docx");
+
+  generateWordDoc(mdContent, wordPath).then(() => {
+    console.log(`✓ Word document saved → ${wordPath}`);
+    process.exit(0);
+  }).catch((err) => {
+    console.error("Failed to generate Word document:", err.message);
+    process.exit(1);
+  });
+} else {
+
 if (!skipToCopilot) {
 // ── Step 1 & 2: Scrape Power BI + Azure OpenAI summarisation ──────────────
 if (!skipScrape) {
@@ -298,21 +299,39 @@ try {
 
 } // end skipToCopilot
 
-// ── Step 4: Print the Copilot CLI steps for the user to run manually ───────
+// ── Step 4: Copy setup commands to clipboard and launch Copilot CLI ────────
 console.log("\n" + "═".repeat(60));
-console.log("STEP 4 — Run the following steps in your terminal");
+console.log("STEP 4 — Launching Copilot CLI");
 console.log("═".repeat(60));
 
-console.log("\n1. Launch Copilot CLI:\n");
-console.log("   copilot\n");
-console.log("2. Enable all permissions:\n");
-console.log("   /allow-all\n");
-console.log("3. Accept the WorkIQ EULA:\n");
-console.log("   workiq accepteula\n");
-console.log("4. Run the fleet prompt:\n");
-console.log(`   copilot -p "$(Get-Content '${FLEET_PROMPT_FILE}' -Raw)"\n`);
-console.log("5. Once complete, generate the Word doc:\n");
-console.log(`   node run-connect.js --word-only --quarter ${quarter}\n`);
+const setupCommands = `Run the following as individual commands:\n\n/allow-all\nworkiq accepteula\nExecute Prompt: @'${FLEET_PROMPT_FILE}'\n`;
 
+try {
+  execFileSync("clip", [], { input: setupCommands, cwd: ROOT });
+  console.log("\n✓ Setup commands copied to clipboard.");
+  console.log("  Once Copilot opens, paste from clipboard (Ctrl+V) into the prompt.\n");
+  console.log("  The clipboard contains:");
+  console.log("Run the following as individual commands:\n\n")
+  console.log("    /allow-all");
+  console.log("    workiq accepteula");
+  console.log(`    Execute Prompt: @${FLEET_PROMPT_FILE}'\n`);
+} catch {
+  console.log("\nCould not copy to clipboard. Run these commands manually in Copilot:");
+  console.log("  /allow-all");
+  console.log("  workiq accepteula");
+  console.log(`  copilot -p "$(Get-Content '${FLEET_PROMPT_FILE}' -Raw)"\n`);
+}
+
+console.log("Launching Copilot CLI...\n");
+
+try {
+  execFileSync("copilot", [], { cwd: ROOT, stdio: "inherit", shell: true });
+} catch {
+  // Copilot exited — not necessarily an error
+}
+
+console.log("\n" + "═".repeat(60));
+console.log("Copilot session ended.");
+console.log(`Generate the Word doc with: node run-connect.js --word-only --quarter ${quarter}`);
 console.log("═".repeat(60));
 } // end else (full pipeline)

@@ -3,6 +3,13 @@ QUARTERLY CONNECT FLEET INSTRUCTION PACK
 PURPOSE
 Use GitHub Copilot CLI with /fleet to produce a full quarterly Connect draft that is strategic, evidence-backed, and aligned to the structure and tone of the past sample Connect. The workflow must combine user-supplied quarter information, user-supplied core metrics, and evidence gathered from WorkIQ across emails, Teams messages, documents, and Loop content.
 
+ROLE CONTEXT
+The author is a Pro Code developer focused on the Azure platform. Core expertise spans the full Azure stack including but not limited to: AKS, ARO, AI Search, Microsoft Fabric, Azure SQL Database, Cosmos DB, Redis Cache, App Service, Azure Functions, Integration Services, Web Apps, React front-ends, Azure AI Foundry, Foundry IQ Services, Agentic AI design, Foundry agents and tools, evaluations, models, and AI Landing Zones. Adjacent focus areas include Azure DevOps, GitHub, and GitHub Copilot.
+
+The author's revenue model centres on Azure Consumption Revenue (ACR) and Microsoft Fabric consumption. The author does not sell Copilot licences. Any Copilot references should reflect enablement, developer productivity, or technical advocacy rather than licence sales. Licensing evidence should focus on Azure consumption and Fabric consumption only.
+
+Do not include Copilot Studio wins as standalone achievements. Only reference Copilot Studio if the author built a hybrid solution for a customer that included it as a component (e.g. Quebecor). The focus should remain on the custom pro-code work, not the Copilot Studio element itself.
+
 PREREQUISITES
 1. WorkIQ access is enabled and any required consent/EULA is already handled.
 2. The user supplies the quarter or exact date range.
@@ -33,8 +40,9 @@ NON-NEGOTIABLE RULES
 
 REQUIRED SEARCH COVERAGE
 The workflow must explicitly search for and report on all of the following:
-- Customer outcomes and business impact
-- Strategic value created from engagements
+- Customer outcomes and business impact (especially Azure consumption growth, Fabric consumption, and solution deployments)
+- Strategic value created from engagements (architecture design, proof-of-concept builds, production go-lives)
+- Technical solution delivery across Azure services (AKS, ARO, AI Search, Fabric, SQL, Cosmos DB, Redis, App Service, Functions, Integration Services, Web Apps, Foundry, AI Landing Zones, Agentic AI)
 - Community contributions
 - Events supported, hosted, or spoken at
 - Kudos given to others
@@ -50,24 +58,29 @@ Use WorkIQ searches that cover:
 - Loop content
 
 Helpful search concepts and synonyms:
+- azure and platform work: AKS, ARO, Kubernetes, OpenShift, AI Search, Cognitive Search, Fabric, Synapse, SQL Database, Cosmos DB, Redis, App Service, Functions, Logic Apps, API Management, Service Bus, Event Grid, Event Hubs, Integration Services, Web App, React, Foundry, AI Foundry, Foundry IQ, agentic, agent, evaluation, model, AI Landing Zone, landing zone, well-architected, architecture, deployment, migration, modernization, consumption, ACR
+- devops and developer tools: Azure DevOps, GitHub, GitHub Copilot, CI/CD, pipeline, repo, pull request, code review, DevSecOps, Infrastructure as Code, Bicep, Terraform
 - community or events: community, event, meetup, technical community, hackathon, conference, tour, summit, workshop, roundtable, panel, volunteer
 - kudos given: thanks, thank you, kudos, shout-out, appreciation, appreciate, recognition, great job
 - coaching delivered: coach, mentoring, mentor, guidance, feedback, 1:1, review, helped, supported, taught
 - coaching received: feedback, mentor, coaching, advice, guidance, learned from, suggestion, recommendation
 - awards received: award, recognition, winner, nominated, spotlight, celebrated, congratulations
 - setbacks and growth: issue, challenge, risk, concern, setback, learned, lesson, adjusted, adapted, improved
+- licensing and revenue: consumption, ACR, Azure consumption, Fabric consumption, usage, spend, revenue, pipeline, opportunity
 
 PARALLEL WORKSTREAMS FOR /FLEET
 When possible, split the job into these parallel workstreams:
 
 1. Metrics and strategic storyline
    - Parse the supplied core metrics.
-   - Pull out the strongest signals on customer impact, demand, satisfaction, journey progression, opportunity creation, and role breadth.
+   - Pull out the strongest signals on Azure consumption growth, Fabric consumption, customer impact, solution deployments, demand, satisfaction, journey progression, opportunity creation, and technical breadth across the Azure stack.
    - Convert raw metrics into strategic value statements without overstating causality.
+   - Focus on ACR and Fabric consumption as primary revenue indicators. Do not reference Copilot licence sales.
 
 2. Customer impact evidence
    - Search WorkIQ for concrete examples tied to customer value, decision-making, opportunity progression, trusted-advisor moments, follow-up actions, and measurable outcomes.
    - Find examples that show how the work was done, not just what was delivered.
+   - Prioritise evidence involving Azure platform services (AKS, ARO, Cosmos DB, Fabric, AI Search, Foundry, App Service, Functions, SQL, Redis, Integration Services, AI Landing Zones, Agentic AI) and developer tooling (Azure DevOps, GitHub, GitHub Copilot).
 
 3. Community and event evidence
    - Search for community contributions, internal enablement, cross-team leadership, external events, hackathons, conferences, and hosted sessions.
@@ -92,7 +105,7 @@ EVIDENCE SCHEMA
 Every material point should map to one or more records using this schema:
 
 - claim_id: short unique identifier
-- theme: one of business-impact, customer-outcome, community, event, kudos-given, kudos-received, coaching-delivered, coaching-received, award, setback, growth, future-goal
+- theme: one of business-impact, customer-outcome, azure-solution, consumption-revenue, community, event, kudos-given, kudos-received, coaching-delivered, coaching-received, award, setback, growth, future-goal
 - section: results, setbacks-growth, future-goals, behaviors, or cross-cutting
 - claim_summary: one sentence summary of the point the draft may make
 - source_type: email, Teams, document, Loop, metric, or mixed
@@ -213,7 +226,7 @@ Execution instructions:
    - Reflect on recent setbacks: lessons learned and growth
    - Plan for the future: goals for the upcoming period
    - Actions and behaviors: how those goals will be achieved
-9. Optimize for strategic business value. Show measurable customer impact, leadership, trusted-advisor behavior, collaboration, community contribution, coaching, and growth.
+9. Optimize for strategic business value. Show measurable customer impact, Azure consumption and Fabric consumption outcomes, solution delivery across the Azure stack, leadership, trusted-advisor behavior, collaboration, community contribution, coaching, and growth. Do not reference Copilot licence sales.
 10. Do not fabricate or smooth over evidence gaps. If the evidence is thin, say so and provide follow-up questions or missing-data notes.
 
 Return the result in this order:

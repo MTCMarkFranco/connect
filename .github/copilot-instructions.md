@@ -2,79 +2,97 @@
 
 ## Repository shape
 
-This repository is a documentation-driven workflow for producing a quarterly Connect draft with GitHub Copilot CLI and WorkIQ, not an application codebase with source, build artifacts, or tests.
+This is an automated pipeline for producing a quarterly Connect draft. It combines Playwright-based Power BI scraping, Azure OpenAI summarisation, and GitHub Copilot CLI + WorkIQ evidence gathering.
 
-- `README.md` is the human/operator guide. It covers local setup, WorkIQ plugin or MCP configuration, extracting Power BI metrics into `core metrics.txt`, and the starter `/fleet` invocation.
-- `quarterly-connect-fleet-instructions.txt` is the agent execution spec. Treat it as the source of truth for the actual `/fleet` workflow, required evidence coverage, evidence schema, quality bar, and final output structure.
+**Key files:**
 
-Keep those two documents aligned: README explains how to run the workflow, while the instruction pack defines how Copilot should execute it.
+- `run-connect.js` — Main orchestrator. Runs the full pipeline end-to-end (scrape → summarise → merge prompt → launch Copilot CLI). Also generates a Word `.docx` from the final markdown draft.
+- `scrape-powerbi.js` — Playwright script that opens a Power BI report in Edge, captures screenshots + text, and sends them to Azure OpenAI for multi-modal summarisation.
+- `gh-cli-prompts/quarterly-connect-fleet-instructions.txt` — The agent execution spec (source of truth for the `/fleet` workflow, evidence coverage, evidence schema, quality bar, and output structure).
+- `README.md` — Human/operator setup guide.
+- `temp/` — Generated artifacts directory (gitignored). Contains scraped metrics, merged prompts, the Connect draft, and the final `.docx`.
 
-## Commands and workflow entry points
+Keep `README.md` and the fleet instruction pack aligned: the README explains how to run the workflow; the instruction pack defines how Copilot should execute it.
 
-There are no repository-defined build, lint, or automated test commands in this repo.
+## Commands
 
-The important commands are the workflow commands documented in `README.md`:
+There are no build, lint, or test commands. The repo has these workflow commands:
 
-- Start Copilot CLI in this folder:
-  - `copilot`
-- Install the recommended WorkIQ plugin:
-  - `/plugin install workiq@copilot-plugins`
-- If using the explicit MCP route instead of the plugin:
-  - `/mcp add`
-  - `/mcp show`
-  - `/mcp show workiq`
-- Start the Connect generation flow:
+```powershell
+# Full pipeline (headed browser for first-time Power BI login)
+node run-connect.js --quarter FY26Q3
 
-```text
-/fleet Create my quarterly Connect using the instruction pack in @quarterly-connect-fleet-instructions.txt.
-Quarter: <quarter>
-Core metrics:
-@core metrics.txt
+# Subsequent runs (headless, reuses cached auth)
+node run-connect.js --quarter FY26Q3 --headless
+
+# Skip scraping, reuse existing metrics
+node run-connect.js --quarter FY26Q3 --skip-scrape
+
+# Jump straight to Copilot CLI (requires prior run)
+node run-connect.js --skip-to-copilot --quarter FY26Q3
+
+# Regenerate Word doc from existing Connect-Draft.md
+node run-connect.js --word-only --quarter FY26Q3
+
+# Scrape only (no Copilot launch)
+node scrape-powerbi.js --quarter FY26Q3
+node scrape-powerbi.js --quarter FY26Q3 --headless
 ```
 
-The working folder is expected to contain `quarterly-connect-fleet-instructions.txt` plus a user-provided or user-generated `core metrics.txt`.
+**Install:**
+
+```powershell
+npm install
+npx playwright install
+```
 
 ## High-level architecture
 
-The effective architecture is a two-layer prompt system plus user-supplied data:
+The pipeline has three layers:
 
-1. **Setup and input preparation layer (`README.md`)**
-   - install Copilot CLI
-   - connect WorkIQ, preferably through the plugin
-   - extract quarter-specific Power BI metrics into plain text
-   - launch `/fleet` from this repository folder
+1. **Scraping & summarisation** (`scrape-powerbi.js`)
+   - Launches Edge via Playwright with a persistent auth context (`.auth/`)
+   - Scrolls through the Power BI report capturing screenshots + raw text
+   - Sends both to Azure OpenAI (GPT-4o-mini via `DefaultAzureCredential`) for structured summarisation → `temp/final-metrics.md`
 
-2. **Execution layer (`quarterly-connect-fleet-instructions.txt`)**
-   - validate required inputs before doing work
-   - split the work into parallel evidence-gathering and synthesis streams
-   - search WorkIQ across email, Teams, documents, and Loop
-   - assemble an evidence ledger
-   - draft the final Connect only after validation
+2. **Prompt assembly & Copilot launch** (`run-connect.js`)
+   - Merges the fleet instruction pack + summarised metrics into a single prompt file → `temp/fleet-prompt.txt`
+   - Copies prompt to clipboard, verifies Copilot CLI auth, accepts WorkIQ EULA
+   - Launches `copilot -i` with the merged prompt piped in
+   - On exit: captures Copilot stdout → `temp/Connect-Draft.md`, then generates `temp/final.docx`
 
-3. **Runtime inputs**
-   - quarter or date range
-   - `core metrics.txt`
-   - optional focus themes, exclusions/sensitivity notes, and current goals/priorities
+3. **Evidence-gathering execution** (fleet instruction pack, run inside Copilot CLI)
+   - Validates required inputs (quarter + core metrics)
+   - Splits into parallel workstreams: metrics analysis, customer impact, community/events, recognition/coaching, growth/setbacks
+   - Searches WorkIQ across emails, Teams, documents, and Loop
+   - Assembles an evidence ledger, validates coverage, then drafts the final Connect
 
-Future changes should preserve this split: onboarding/setup guidance belongs in the README, while evidence and drafting behavior belongs in the fleet instruction pack.
+## Environment
 
-## Repository-specific conventions
+Requires a `.env` file in the project root:
 
-- Do not invent facts, examples, praise, or outcomes. The instruction pack treats unsupported claims as failures, not gaps to smooth over.
-- Stop and ask for missing required inputs if either the quarter/date range or core metrics are absent.
-- Build the final draft from an evidence ledger first. Every major claim should map back to evidence metadata such as source type, reference, period, people, and business value.
-- Prefer evidence from the target quarter. If older material is used for context, label it clearly as prior context.
-- Preserve exact metric values from the Power BI extraction. Convert them into strategic narrative carefully and do not overstate causality.
-- Explicitly cover all required evidence domains from the instruction pack: customer impact, strategic value, community contributions, events, kudos given, coaching delivered, coaching received, awards/recognition, and setbacks/growth.
-- Search across all four WorkIQ surfaces named in the pack: emails, Teams messages, documents, and Loop content.
-- Paraphrase sensitive workplace or customer content instead of copying it verbatim, especially when the README or pack calls out sensitivity handling.
-- When updating the repository docs, keep the quick-start examples in `README.md` consistent with the required input contract and output order in `quarterly-connect-fleet-instructions.txt`.
+```
+AZURE_OPENAI_ENDPOINT=https://YOUR-RESOURCE.openai.azure.com
+AZURE_OPENAI_DEPLOYMENT=gpt-4o-mini
+```
+
+Authentication uses `DefaultAzureCredential` (Entra ID) — no API key. Browser auth state is persisted in `.auth/` (gitignored).
+
+## Key conventions
+
+- **No invented content.** The instruction pack treats unsupported claims as failures. Every major claim must map back to evidence with source metadata (type, reference, period, people, business value).
+- **Evidence-first drafting.** Build an evidence ledger before writing the Connect draft. Prefer target-quarter evidence; label older material as "prior context."
+- **Preserve exact metrics.** Do not round or reinterpret numbers from the Power BI extraction. Convert to narrative carefully without overstating causality.
+- **Cover all evidence domains:** customer impact, strategic value, community contributions, events, kudos given, coaching delivered, coaching received, awards/recognition, and setbacks/growth.
+- **Search all four WorkIQ surfaces:** emails, Teams messages, documents, and Loop content.
+- **Paraphrase sensitive content** — do not copy verbatim, especially customer or workplace specifics.
+- **Stop and ask** if required inputs (quarter/date range or core metrics) are missing.
 
 ## Expected output structure
 
-When following this repository's workflow, the final result should be returned in the order defined by the instruction pack:
+When following the fleet workflow, produce results in this order:
 
 1. Input and coverage check
 2. Evidence ledger
 3. Gaps or follow-up questions
-4. Final Connect draft
+4. Final Connect draft (first-person, strategic, evidence-backed)

@@ -298,19 +298,20 @@ try {
 
 } // end skipToCopilot
 
-// ── Step 4: Print the Copilot CLI command for the user to run manually ─────
+// ── Step 4: Print the Copilot CLI steps for the user to run manually ───────
 console.log("\n" + "═".repeat(60));
-console.log("STEP 4 — Run the following command in your terminal");
+console.log("STEP 4 — Run the following steps in your terminal");
 console.log("═".repeat(60));
 
-const promptCmd = `copilot -p "$(Get-Content '${FLEET_PROMPT_FILE}' -Raw)"`;
-
-console.log("\n1. First, enable all tools in Copilot CLI:");
-console.log("\n   copilot -i /allow-all\n   Then exit with: /exit\n");
-console.log("2. Then run the fleet prompt:\n");
-console.log(`   ${promptCmd}\n`);
-console.log("Copilot will save the Connect draft to temp/Connect-Draft.md");
-console.log("Once complete, generate the Word doc with:\n");
+console.log("\n1. Launch Copilot CLI:\n");
+console.log("   copilot\n");
+console.log("2. Enable all permissions:\n");
+console.log("   /allow-all\n");
+console.log("3. Accept the WorkIQ EULA:\n");
+console.log("   workiq accepteula\n");
+console.log("4. Run the fleet prompt:\n");
+console.log(`   copilot -p "$(Get-Content '${FLEET_PROMPT_FILE}' -Raw)"\n`);
+console.log("5. Once complete, generate the Word doc:\n");
 console.log(`   node run-connect.js --word-only --quarter ${quarter}\n`);
 
 console.log("═".repeat(60));

@@ -6,6 +6,7 @@
 
   "dependencies": {
     "@azure/identity": "^4.13.0",
+    "docx": "^9.0.0",
     "dotenv": "^16.4.0",
     "openai": "^4.80.0",
     "playwright": "^1.50.0"

@@ -15,12 +15,14 @@
  *   node run-connect.js --quarter FY26Q3 --headless --date-range "Jan 1, 2026 - Mar 31, 2026"
  *   node run-connect.js --skip-scrape --quarter FY26Q3   # reuse existing final-metrics.md
  *   node run-connect.js --skip-to-copilot --quarter FY26Q3 # jump straight to Copilot CLI
+ *   node run-connect.js --word-only --quarter FY26Q3       # generate final.docx from existing temp/ files
  */
 
 const { execFileSync, execSync, spawn } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const docx = require("docx");
 
 // ── Parse CLI args ─────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
@@ -33,6 +35,7 @@ const dateRange = getArg("--date-range");
 const headless = args.includes("--headless");
 const skipScrape = args.includes("--skip-scrape");
 const skipToCopilot = args.includes("--skip-to-copilot");
+const wordOnly = args.includes("--word-only");
 
 if (!quarter) {
   console.error("Error: --quarter is required (e.g. --quarter Y26Q3)");
@@ -46,6 +49,183 @@ const FLEET_INSTRUCTIONS = path.join(ROOT, "gh-cli-prompts", "quarterly-connect-
 const FLEET_PROMPT_FILE = path.join(TEMP_DIR, "fleet-prompt.txt");
 
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
+
+// ── Word-only mode: generate final.docx from existing temp/ files and exit ─
+if (wordOnly) {
+  const sourcePath = path.join(TEMP_DIR, "Connect-Draft.md");
+
+  if (!fs.existsSync(sourcePath)) {
+    console.error(`Error: ${sourcePath} not found. Run the full pipeline first to generate the Connect Draft.`);
+    process.exit(1);
+  }
+
+  console.log(`Reading Connect Draft from → ${sourcePath}`);
+  const mdContent = fs.readFileSync(sourcePath, "utf-8");
+  const wordPath = path.join(TEMP_DIR, "final.docx");
+
+  generateWordDoc(mdContent, wordPath).then(() => {
+    console.log(`✓ Word document saved → ${wordPath}`);
+    process.exit(0);
+  }).catch((err) => {
+    console.error("Failed to generate Word document:", err.message);
+    process.exit(1);
+  });
+} else {
+// ── Full pipeline continues below ────────────────────────────────────────── ──────────────────────────────────────────────
+function generateWordDoc(mdContent, outputPath) {
+  const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType,
+          Table, TableRow, TableCell, WidthType, BorderStyle, ShadingType } = docx;
+
+  const children = [];
+  const lines = mdContent.split(/\r?\n/);
+
+  // Parse inline markdown: **bold**, *italic*, `code`
+  function parseInline(text) {
+    const runs = [];
+    const regex = /(\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`)/g;
+    let lastIdx = 0;
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      if (match.index > lastIdx) {
+        runs.push(new TextRun(text.slice(lastIdx, match.index)));
+      }
+      if (match[2]) {
+        runs.push(new TextRun({ text: match[2], bold: true }));
+      } else if (match[3]) {
+        runs.push(new TextRun({ text: match[3], italics: true }));
+      } else if (match[4]) {
+        runs.push(new TextRun({ text: match[4], font: "Consolas", size: 20 }));
+      }
+      lastIdx = match.index + match[0].length;
+    }
+    if (lastIdx < text.length) {
+      runs.push(new TextRun(text.slice(lastIdx)));
+    }
+    return runs;
+  }
+
+  // Detect if a line is a Markdown table row: | col1 | col2 | ...
+  function isTableRow(line) {
+    return /^\|(.+\|)+\s*$/.test(line.trim());
+  }
+
+  // Detect separator row: |---|---|  or | :---: | --- |
+  function isSeparatorRow(line) {
+    return /^\|(\s*:?-+:?\s*\|)+\s*$/.test(line.trim());
+  }
+
+  // Parse a table row into cell text values
+  function parseCells(line) {
+    return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(c => c.trim());
+  }
+
+  // Build a native Word table from collected rows
+  function buildTable(headerCells, dataRows) {
+    const borderStyle = {
+      style: BorderStyle.SINGLE,
+      size: 1,
+      color: "999999",
+    };
+    const borders = {
+      top: borderStyle,
+      bottom: borderStyle,
+      left: borderStyle,
+      right: borderStyle,
+    };
+
+    // Header row
+    const headerRow = new TableRow({
+      tableHeader: true,
+      children: headerCells.map(cell => new TableCell({
+        borders,
+        shading: { type: ShadingType.SOLID, color: "D9E2F3" },
+        children: [new Paragraph({ children: [new TextRun({ text: cell, bold: true, size: 20 })] })],
+      })),
+    });
+
+    // Data rows
+    const rows = dataRows.map(cells => new TableRow({
+      children: cells.map(cell => new TableCell({
+        borders,
+        children: [new Paragraph({ children: parseInline(cell) })],
+      })),
+    }));
+
+    return new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      rows: [headerRow, ...rows],
+    });
+  }
+
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // ── Table detection: look ahead for header | separator | data rows ──
+    if (isTableRow(line) && i + 1 < lines.length && isSeparatorRow(lines[i + 1])) {
+      const headerCells = parseCells(line);
+      i += 2; // skip header + separator
+      const dataRows = [];
+      while (i < lines.length && isTableRow(lines[i]) && !isSeparatorRow(lines[i])) {
+        const cells = parseCells(lines[i]);
+        // Pad or trim to match header column count
+        while (cells.length < headerCells.length) cells.push("");
+        dataRows.push(cells.slice(0, headerCells.length));
+        i++;
+      }
+      children.push(buildTable(headerCells, dataRows));
+      children.push(new Paragraph({ children: [] })); // spacing after table
+      continue;
+    }
+
+    // ── Headings ──
+    if (line.startsWith("#### ")) {
+      children.push(new Paragraph({ heading: HeadingLevel.HEADING_4, children: parseInline(line.slice(5)) }));
+    } else if (line.startsWith("### ")) {
+      children.push(new Paragraph({ heading: HeadingLevel.HEADING_3, children: parseInline(line.slice(4)) }));
+    } else if (line.startsWith("## ")) {
+      children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: parseInline(line.slice(3)) }));
+    } else if (line.startsWith("# ")) {
+      children.push(new Paragraph({ heading: HeadingLevel.HEADING_1, children: parseInline(line.slice(2)) }));
+    } else if (line.startsWith("---")) {
+      children.push(new Paragraph({ children: [] }));
+    } else if (/^>\s/.test(line)) {
+      children.push(new Paragraph({
+        indent: { left: 720 },
+        children: parseInline(line.replace(/^>\s*/, "")),
+      }));
+    } else if (/^\s*[-*]\s/.test(line) && !isTableRow(line)) {
+      children.push(new Paragraph({
+        bullet: { level: 0 },
+        children: parseInline(line.replace(/^\s*[-*]\s+/, "")),
+      }));
+    } else if (/^\s*\d+\.\s/.test(line)) {
+      children.push(new Paragraph({
+        numbering: { reference: "default-numbering", level: 0 },
+        children: parseInline(line.replace(/^\s*\d+\.\s+/, "")),
+      }));
+    } else if (line.trim() === "") {
+      children.push(new Paragraph({ children: [] }));
+    } else {
+      children.push(new Paragraph({ children: parseInline(line) }));
+    }
+    i++;
+  }
+
+  const doc = new Document({
+    numbering: {
+      config: [{
+        reference: "default-numbering",
+        levels: [{ level: 0, format: "decimal", text: "%1.", alignment: AlignmentType.START }],
+      }],
+    },
+    sections: [{ children }],
+  });
+
+  return Packer.toBuffer(doc).then((buffer) => {
+    fs.writeFileSync(outputPath, buffer);
+  });
+}
 
 if (!skipToCopilot) {
 // ── Step 1 & 2: Scrape Power BI + Azure OpenAI summarisation ──────────────
@@ -151,11 +331,20 @@ console.log("\n" + "═".repeat(60));
 console.log("STEP 5 — Launching GitHub Copilot CLI with fleet prompt");
 console.log("═".repeat(60));
 
+const CONNECT_DRAFT_FILE = path.join(TEMP_DIR, "Connect-Draft.md");
+
 const copilot = spawn(
   "powershell",
   ["-NoProfile", "-Command", `copilot -i (Get-Content '${FLEET_PROMPT_FILE}' -Raw)`],
-  { cwd: ROOT, stdio: "inherit" }
+  { cwd: ROOT, stdio: ["inherit", "pipe", "inherit"] }
 );
+
+// Capture stdout: tee to console and accumulate for saving
+let copilotOutput = "";
+copilot.stdout.on("data", (chunk) => {
+  process.stdout.write(chunk);
+  copilotOutput += chunk.toString();
+});
 
 copilot.on("error", (err) => {
   console.error("Failed to launch Copilot CLI. Is it installed? Run: winget install GitHub.Copilot");
@@ -166,36 +355,51 @@ copilot.on("error", (err) => {
 copilot.on("close", (code) => {
   console.log(`\nCopilot CLI exited (code ${code}).`);
 
-  // ── Copy the generated Connect Draft from Copilot's session workspace ──
-  const sessionStateDir = path.join(os.homedir(), ".copilot", "session-state");
-  let draftSrc = null;
+  // ── Persist the Connect Draft from captured output ──────────────────
+  if (copilotOutput.trim().length > 0) {
+    fs.writeFileSync(CONNECT_DRAFT_FILE, copilotOutput.trim(), "utf-8");
+    console.log(`\n✓ Connect Draft saved → ${CONNECT_DRAFT_FILE}`);
+  } else {
+    // Fallback: try to find it in Copilot's session workspace
+    const sessionStateDir = path.join(os.homedir(), ".copilot", "session-state");
+    let draftSrc = null;
 
-  if (fs.existsSync(sessionStateDir)) {
-    // Find the most recently modified *Connect-Draft.md across all sessions
-    const sessions = fs.readdirSync(sessionStateDir);
-    let latestTime = 0;
-    for (const session of sessions) {
-      const filesDir = path.join(sessionStateDir, session, "files");
-      if (!fs.existsSync(filesDir)) continue;
-      for (const file of fs.readdirSync(filesDir)) {
-        if (file.endsWith("-Connect-Draft.md")) {
-          const fullPath = path.join(filesDir, file);
-          const mtime = fs.statSync(fullPath).mtimeMs;
-          if (mtime > latestTime) {
-            latestTime = mtime;
-            draftSrc = fullPath;
+    if (fs.existsSync(sessionStateDir)) {
+      const sessions = fs.readdirSync(sessionStateDir);
+      let latestTime = 0;
+      for (const session of sessions) {
+        const filesDir = path.join(sessionStateDir, session, "files");
+        if (!fs.existsSync(filesDir)) continue;
+        for (const file of fs.readdirSync(filesDir)) {
+          if (file.endsWith("-Connect-Draft.md")) {
+            const fullPath = path.join(filesDir, file);
+            const mtime = fs.statSync(fullPath).mtimeMs;
+            if (mtime > latestTime) {
+              latestTime = mtime;
+              draftSrc = fullPath;
+            }
           }
         }
       }
     }
+
+    if (draftSrc) {
+      fs.copyFileSync(draftSrc, CONNECT_DRAFT_FILE);
+      console.log(`\n✓ Connect Draft copied → ${CONNECT_DRAFT_FILE}`);
+    } else {
+      console.log("\n⚠ Could not capture or find a Connect Draft.");
+    }
   }
 
-  if (draftSrc) {
-    const draftDest = path.join(TEMP_DIR, path.basename(draftSrc));
-    fs.copyFileSync(draftSrc, draftDest);
-    console.log(`\n✓ Connect Draft copied → ${draftDest}`);
-  } else {
-    console.log("\n⚠ Could not find a Connect Draft in Copilot session workspace.");
+  // ── Generate Word document from the Connect Draft ──────────────────
+  if (fs.existsSync(CONNECT_DRAFT_FILE)) {
+    const mdContent = fs.readFileSync(CONNECT_DRAFT_FILE, "utf-8");
+    const wordPath = path.join(TEMP_DIR, "final.docx");
+    generateWordDoc(mdContent, wordPath).then(() => {
+      console.log(`✓ Word document saved → ${wordPath}`);
+    }).catch((docErr) => {
+      console.error("⚠ Failed to generate Word document:", docErr.message);
+    });
   }
 
   // ── ASCII art finish ─────────────────────────────────────────────────
@@ -203,3 +407,4 @@ copilot.on("close", (code) => {
   console.log(`  ║  ★  C O M P L E T E  ★  Find your final output in temp/       ║`);
   console.log(`  ╚══════════════════════════════════════════════════════════════════╝\n`);
 });
+} // end else (full pipeline)

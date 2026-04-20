@@ -18,9 +18,8 @@
  *   node run-connect.js --word-only --quarter FY26Q3       # generate final.docx from existing temp/ files
  */
 
-const { execFileSync, execSync, spawn } = require("child_process");
+const { execFileSync, execSync } = require("child_process");
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
 const docx = require("docx");
 
@@ -274,7 +273,10 @@ merged += instructionsContent.trimEnd() + `\n\n`;
 merged += `=== END INSTRUCTION PACK ===\n\n`;
 merged += `=== CORE METRICS (${quarter}) ===\n\n`;
 merged += metricsContent.trimEnd() + `\n\n`;
-merged += `=== END CORE METRICS ===\n`;
+merged += `=== END CORE METRICS ===\n\n`;
+merged += `=== OUTPUT INSTRUCTIONS ===\n\n`;
+merged += `When complete, save the final Connect draft as the file: temp/Connect-Draft.md\n\n`;
+merged += `=== END OUTPUT INSTRUCTIONS ===\n`;
 
 fs.writeFileSync(FLEET_PROMPT_FILE, merged, "utf-8");
 console.log(`Merged prompt saved → ${FLEET_PROMPT_FILE}`);
@@ -296,127 +298,20 @@ try {
 
 } // end skipToCopilot
 
-// Verify fleet prompt exists before launching Copilot
-if (skipToCopilot && !fs.existsSync(FLEET_PROMPT_FILE)) {
-  console.error(`\nError: ${FLEET_PROMPT_FILE} not found. Run without --skip-to-copilot first.`);
-  process.exit(1);
-}
-
-// ── Step 5: Ensure Copilot CLI is authenticated ───────────────────────────
+// ── Step 4: Print the Copilot CLI command for the user to run manually ─────
 console.log("\n" + "═".repeat(60));
-console.log("STEP 4 — Checking Copilot CLI authentication");
+console.log("STEP 4 — Run the following command in your terminal");
 console.log("═".repeat(60));
 
-try {
-  // A lightweight probe: if not authenticated, copilot -p exits with code 1.
-  execSync('copilot -p "ping" --no-auto-update --no-alt-screen -s', {
-    cwd: ROOT,
-    stdio: ["ignore", "ignore", "ignore"],
-    timeout: 60000,
-  });
-  console.log("✓ Already authenticated with GitHub Copilot.");
-} catch {
-  console.log("Not logged in — starting Copilot CLI login flow...\n");
-  try {
-    execFileSync("copilot", ["login"], { cwd: ROOT, stdio: "inherit" });
-    console.log("\n✓ Login successful.");
-  } catch (loginErr) {
-    console.error("Login failed. Please run 'copilot login' manually and retry.");
-    process.exit(1);
-  }
-}
+const promptCmd = `copilot -p "$(Get-Content '${FLEET_PROMPT_FILE}' -Raw)"`;
 
-// ── Step 5b: Accept WorkIQ EULA before launching Copilot CLI ───────────────
-console.log("\n" + "═".repeat(60));
-console.log("STEP 4b — Accepting WorkIQ EULA");
+console.log("\n1. First, enable all tools in Copilot CLI:");
+console.log("\n   copilot -i /allow-all\n   Then exit with: /exit\n");
+console.log("2. Then run the fleet prompt:\n");
+console.log(`   ${promptCmd}\n`);
+console.log("Copilot will save the Connect draft to temp/Connect-Draft.md");
+console.log("Once complete, generate the Word doc with:\n");
+console.log(`   node run-connect.js --word-only --quarter ${quarter}\n`);
+
 console.log("═".repeat(60));
-
-try {
-  execSync("workiq accept-eula", { cwd: ROOT, stdio: "inherit", timeout: 30000 });
-  console.log("✓ WorkIQ EULA accepted.");
-} catch {
-  console.log("⚠ Could not accept WorkIQ EULA (may already be accepted or workiq not installed).");
-}
-
-// ── Step 6: Launch Copilot CLI with the merged prompt ──────────────────────
-console.log("\n" + "═".repeat(60));
-console.log("STEP 5 — Launching GitHub Copilot CLI with fleet prompt");
-console.log("═".repeat(60));
-
-const CONNECT_DRAFT_FILE = path.join(TEMP_DIR, "Connect-Draft.md");
-
-const copilot = spawn(
-  "powershell",
-  ["-NoProfile", "-Command", `copilot -i (Get-Content '${FLEET_PROMPT_FILE}' -Raw)`],
-  { cwd: ROOT, stdio: ["inherit", "pipe", "inherit"] }
-);
-
-// Capture stdout: tee to console and accumulate for saving
-let copilotOutput = "";
-copilot.stdout.on("data", (chunk) => {
-  process.stdout.write(chunk);
-  copilotOutput += chunk.toString();
-});
-
-copilot.on("error", (err) => {
-  console.error("Failed to launch Copilot CLI. Is it installed? Run: winget install GitHub.Copilot");
-  console.error(err.message);
-  process.exit(1);
-});
-
-copilot.on("close", (code) => {
-  console.log(`\nCopilot CLI exited (code ${code}).`);
-
-  // ── Persist the Connect Draft from captured output ──────────────────
-  if (copilotOutput.trim().length > 0) {
-    fs.writeFileSync(CONNECT_DRAFT_FILE, copilotOutput.trim(), "utf-8");
-    console.log(`\n✓ Connect Draft saved → ${CONNECT_DRAFT_FILE}`);
-  } else {
-    // Fallback: try to find it in Copilot's session workspace
-    const sessionStateDir = path.join(os.homedir(), ".copilot", "session-state");
-    let draftSrc = null;
-
-    if (fs.existsSync(sessionStateDir)) {
-      const sessions = fs.readdirSync(sessionStateDir);
-      let latestTime = 0;
-      for (const session of sessions) {
-        const filesDir = path.join(sessionStateDir, session, "files");
-        if (!fs.existsSync(filesDir)) continue;
-        for (const file of fs.readdirSync(filesDir)) {
-          if (file.endsWith("-Connect-Draft.md")) {
-            const fullPath = path.join(filesDir, file);
-            const mtime = fs.statSync(fullPath).mtimeMs;
-            if (mtime > latestTime) {
-              latestTime = mtime;
-              draftSrc = fullPath;
-            }
-          }
-        }
-      }
-    }
-
-    if (draftSrc) {
-      fs.copyFileSync(draftSrc, CONNECT_DRAFT_FILE);
-      console.log(`\n✓ Connect Draft copied → ${CONNECT_DRAFT_FILE}`);
-    } else {
-      console.log("\n⚠ Could not capture or find a Connect Draft.");
-    }
-  }
-
-  // ── Generate Word document from the Connect Draft ──────────────────
-  if (fs.existsSync(CONNECT_DRAFT_FILE)) {
-    const mdContent = fs.readFileSync(CONNECT_DRAFT_FILE, "utf-8");
-    const wordPath = path.join(TEMP_DIR, "final.docx");
-    generateWordDoc(mdContent, wordPath).then(() => {
-      console.log(`✓ Word document saved → ${wordPath}`);
-    }).catch((docErr) => {
-      console.error("⚠ Failed to generate Word document:", docErr.message);
-    });
-  }
-
-  // ── ASCII art finish ─────────────────────────────────────────────────
-  console.log(`\n╔══════════════════════════════════════════════════════════════════╗`);
-  console.log(`  ║  ★  C O M P L E T E  ★  Find your final output in temp/       ║`);
-  console.log(`  ╚══════════════════════════════════════════════════════════════════╝\n`);
-});
 } // end else (full pipeline)

@@ -304,7 +304,7 @@ console.log("\n" + "═".repeat(60));
 console.log("STEP 4 — Launching Copilot CLI");
 console.log("═".repeat(60));
 
-const setupCommands = `Run the following as individual commands:\n\n/allow-all\nworkiq accepteula\nExecute Prompt: @'${FLEET_PROMPT_FILE}'\n`;
+const setupCommands = `Run the following as individual commands:\n\n/allow-all\nworkiq accepteula\nExecute Prompt: @'${FLEET_PROMPT_FILE}'\n/exit\n`;
 
 try {
   execFileSync("clip", [], { input: setupCommands, cwd: ROOT });
@@ -315,11 +315,13 @@ try {
   console.log("    /allow-all");
   console.log("    workiq accepteula");
   console.log(`    Execute Prompt: @${FLEET_PROMPT_FILE}'\n`);
+  console.log("    /exit");
 } catch {
   console.log("\nCould not copy to clipboard. Run these commands manually in Copilot:");
   console.log("  /allow-all");
   console.log("  workiq accepteula");
-  console.log(`  copilot -p "$(Get-Content '${FLEET_PROMPT_FILE}' -Raw)"\n`);
+  console.log(`  Execute Prompt: @${FLEET_PROMPT_FILE}'\n`);
+  console.log("  /exit");
 }
 
 console.log("Launching Copilot CLI...\n");
@@ -331,7 +333,20 @@ try {
 }
 
 console.log("\n" + "═".repeat(60));
-console.log("Copilot session ended.");
-console.log(`Generate the Word doc with: node run-connect.js --word-only --quarter ${quarter}`);
+console.log("Copilot session ended. Generating Word document...");
 console.log("═".repeat(60));
+
+const draftPath = path.join(TEMP_DIR, "Connect-Draft.md");
+if (fs.existsSync(draftPath)) {
+  const mdContent = fs.readFileSync(draftPath, "utf-8");
+  const wordPath = path.join(TEMP_DIR, "final.docx");
+  generateWordDoc(mdContent, wordPath).then(() => {
+    console.log(`✓ Word document saved → ${wordPath}`);
+  }).catch((err) => {
+    console.error("Failed to generate Word document:", err.message);
+  });
+} else {
+  console.log(`Connect-Draft.md not found at ${draftPath}. Skipping Word generation.`);
+  console.log(`If the draft was saved elsewhere, run: node run-connect.js --word-only --quarter ${quarter}`);
+}
 } // end else (full pipeline)

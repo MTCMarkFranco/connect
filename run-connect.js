@@ -326,6 +326,18 @@ try {
   }
 }
 
+// ── Step 5b: Accept WorkIQ EULA before launching Copilot CLI ───────────────
+console.log("\n" + "═".repeat(60));
+console.log("STEP 4b — Accepting WorkIQ EULA");
+console.log("═".repeat(60));
+
+try {
+  execSync("workiq accept-eula", { cwd: ROOT, stdio: "inherit", timeout: 30000 });
+  console.log("✓ WorkIQ EULA accepted.");
+} catch {
+  console.log("⚠ Could not accept WorkIQ EULA (may already be accepted or workiq not installed).");
+}
+
 // ── Step 6: Launch Copilot CLI with the merged prompt ──────────────────────
 console.log("\n" + "═".repeat(60));
 console.log("STEP 5 — Launching GitHub Copilot CLI with fleet prompt");

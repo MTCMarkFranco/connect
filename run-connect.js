@@ -64,6 +64,7 @@ const FINAL_METRICS = path.join(TEMP_DIR, "final-metrics.md");
 const FLEET_INSTRUCTIONS = path.join(ROOT, "gh-cli-prompts", "quarterly-connect-fleet-instructions.txt");
 const FLEET_PROMPT_FILE = path.join(TEMP_DIR, "fleet-prompt.txt");
 const MEASURING_STICK = path.join(ROOT, "guidance", "measuring-stick.md");
+const MORE_EVIDENCE_DIR = path.join(ROOT, "more-evidence");
 
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
@@ -337,10 +338,13 @@ IMPORTANT — QUERY RULES:
 - Each query must be sent to WorkIQ as-is — short queries work, long ones time out.
 - Do NOT include the person's name in queries (WorkIQ already scopes to the current user).
 - Run workstreams in parallel.
+- Exclude personal/private life content completely. Ignore items such as banking, mortgage renewal, personal finance, family, health, travel, social plans, or non-work admin.
+- Include only work-relevant evidence tied to professional impact, delivery, collaboration, leadership, coaching, or community contributions.
 
 ${workstreams.join("\n")}
 
 For each result, note: Source type, reference, date, people involved, and HOW impact was made.
+If a result is personal/non-work, discard it and do not include it in the evidence file.
 
 Save all evidence to: ${evidenceFile}
 
@@ -437,11 +441,17 @@ STRUCTURE RULES:
 
 WRITING RULES:
 - First-person, strategic, professional tone throughout.
+- Write as if the employee is speaking directly to their manager in their own voice.
+- Showcase impact clearly and confidently while staying evidence-backed.
 - Keep every number, metric, and date exact — do not round or reinterpret.
 - Do NOT invent evidence. Only use content from the draft and the evidence file.
 - Paraphrase sensitive content — do not copy verbatim.
 - Preserve all existing draft content. Restructure it into the field format above but do not remove information.
 - NEVER use markdown tables (| col | col |). Use only the labelled paragraph format above.
+- Do NOT include meta commentary about search quality, evidence coverage, what was/was not found, rubric grading, model reasoning, or tool behavior.
+- Do NOT mention LLMs, prompts, internal evaluation logic, or any "I found/I could not find" process language.
+- Exclude personal-life content entirely. Do not include personal finance/banking/mortgage, family, health, travel, or other non-work personal matters.
+- If personal/non-work evidence appears in inputs, ignore it and do not mention it.
 - METRIC ATTRIBUTION: Many metrics from the Power BI report are team or territory-level aggregates, NOT the individual's personal output. Do not attribute aggregate numbers as personal accomplishments. An individual typically contributes 1–3 engagements per customer. If a metric is labelled as team/territory/org-level, present it as context ("My territory achieved…") rather than a personal claim ("I delivered…"). When scope is ambiguous, default to team/territory attribution.
 
 OUTPUT:
@@ -459,7 +469,7 @@ async function mergeEvidenceIntoDraft(client, deployment, draftContent, rubricCo
         content:
           `=== CURRENT CONNECT DRAFT ===\n\n${draftContent}\n\n=== END DRAFT ===\n\n` +
           `=== EVIDENCE FILE ===\n\n${evidenceContent}\n\n=== END EVIDENCE ===\n\n` +
-          `Merge the evidence into the draft. Structure every accomplishment using the labelled paragraph format (Theme, Claim Summary, Period, People / Orgs, What Did I Do, How I Did It, Business Value, Related Metric). No tables. Return the complete updated draft.`,
+          `Merge the evidence into the draft. Structure every accomplishment using the labelled paragraph format (Theme, Claim Summary, Period, People / Orgs, What Did I Do, How I Did It, Business Value, Related Metric). No tables. Write in first person directly to the manager, as if personally authored by the employee. Exclude any meta/process language (including what was/was not found, search diagnostics, or model reasoning). Exclude all personal/non-work content (for example banking, mortgage renewal, personal finance, family, health, travel). Return the complete updated draft.`,
       },
     ],
     temperature: 0.3,
@@ -847,7 +857,19 @@ console.log("═".repeat(60));
 const instructionsContent = fs.readFileSync(FLEET_INSTRUCTIONS, "utf-8");
 const metricsContent = fs.readFileSync(FINAL_METRICS, "utf-8");
 
-// Build the merged file: quarter context + full instruction pack + full metrics.
+// Load any additional evidence files from more-evidence/
+let additionalEvidenceBlocks = [];
+if (fs.existsSync(MORE_EVIDENCE_DIR)) {
+  const evidenceFiles = fs.readdirSync(MORE_EVIDENCE_DIR).filter(f => f.endsWith(".md") || f.endsWith(".txt"));
+  for (const file of evidenceFiles) {
+    const filePath = path.join(MORE_EVIDENCE_DIR, file);
+    const content = fs.readFileSync(filePath, "utf-8");
+    additionalEvidenceBlocks.push({ file, content });
+    console.log(`  Additional evidence loaded: ${file} (${content.length} chars)`);
+  }
+}
+
+// Build the merged file: quarter context + full instruction pack + full metrics + additional evidence.
 // This file will be referenced via @fleet-prompt.txt in the Copilot CLI command.
 let merged = `Create my quarterly Connect draft using the full instruction pack and core metrics provided below.\n\n`;
 merged += `Quarter: ${quarter}\n`;
@@ -861,7 +883,19 @@ merged += `=== END INSTRUCTION PACK ===\n\n`;
 merged += `=== CORE METRICS (${quarter}) ===\n\n`;
 merged += metricsContent.trimEnd() + `\n\n`;
 merged += `=== END CORE METRICS ===\n\n`;
+for (const { file, content } of additionalEvidenceBlocks) {
+  merged += `=== ADDITIONAL EVIDENCE: ${file} ===\n\n`;
+  merged += content.trimEnd() + `\n\n`;
+  merged += `=== END ADDITIONAL EVIDENCE: ${file} ===\n\n`;
+}
 merged += `=== OUTPUT INSTRUCTIONS ===\n\n`;
+merged += `Write the final Connect in first person, as if I personally wrote it directly to my manager.\n`;
+merged += `Use a confident, professional tone that clearly showcases my work, impact, decisions, and leadership.\n`;
+merged += `Do NOT include any AI/meta commentary, evidence diagnostics, or statements about what was or was not found.\n`;
+merged += `Do NOT mention LLMs, prompts, searches, reasoning steps, rubric scoring, or evaluation logic in the final draft.\n`;
+merged += `Exclude personal/non-work content entirely (for example banking, mortgage renewal, personal finance, family, health, travel, or private admin tasks).\n`;
+merged += `If the instruction pack includes coverage checks or gap analysis, treat those as internal process only and keep them out of the final submitted Connect narrative.\n`;
+merged += `Output only the final Connect content, ready to submit.\n`;
 merged += `When complete, save the final Connect draft as the file: temp/Connect-Draft.md\n\n`;
 merged += `=== END OUTPUT INSTRUCTIONS ===\n`;
 
@@ -869,6 +903,10 @@ fs.writeFileSync(FLEET_PROMPT_FILE, merged, "utf-8");
 console.log(`Merged prompt saved → ${FLEET_PROMPT_FILE}`);
 console.log(`  Instructions: ${instructionsContent.length} chars`);
 console.log(`  Metrics:      ${metricsContent.length} chars`);
+if (additionalEvidenceBlocks.length > 0) {
+  const addlChars = additionalEvidenceBlocks.reduce((sum, b) => sum + b.content.length, 0);
+  console.log(`  Additional:   ${addlChars} chars across ${additionalEvidenceBlocks.length} file(s)`);
+}
 console.log(`  Total file:   ${merged.length} chars`);
 
 // ── Step 4: Copy merged prompt to clipboard (fallback) ─────────────────────

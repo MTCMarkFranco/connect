@@ -8,6 +8,8 @@
  *   4. Copy the merged prompt to clipboard
  *   5. Ensure Copilot CLI is authenticated (auto-login if needed)
  *   6. Launch GitHub Copilot CLI interactively
+ *   7. Iteratively refine the Connect draft against the measuring-stick rubric
+ *      until every dimension reaches "Exceptional impact"
  *
  * Usage:
  *   node run-connect.js --quarter FY26Q3
@@ -16,12 +18,21 @@
  *   node run-connect.js --skip-scrape --quarter FY26Q3   # reuse existing final-metrics.md
  *   node run-connect.js --skip-to-copilot --quarter FY26Q3 # jump straight to Copilot CLI
  *   node run-connect.js --word-only --quarter FY26Q3       # generate final.docx from existing temp/ files
+ *   node run-connect.js --refine-only --quarter FY26Q3     # run only the measuring-stick refinement loop
+ *   node run-connect.js --skip-refine --quarter FY26Q3     # skip the refinement loop
+ *   node run-connect.js --max-refine-passes 5 --quarter FY26Q3  # set max refinement iterations (default 3)
+ *   node run-connect.js --target-score 10 --quarter FY26Q3      # set target Exceptional cells (default 10 of 12)
  */
 
 const { execFileSync, execSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+const readline = require("readline");
 const docx = require("docx");
+const { AzureOpenAI } = require("openai");
+const { DefaultAzureCredential, getBearerTokenProvider } = require("@azure/identity");
+
+require("dotenv").config({ path: path.join(__dirname, ".env") });
 
 // ── Parse CLI args ─────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
@@ -35,6 +46,12 @@ const headless = args.includes("--headless");
 const skipScrape = args.includes("--skip-scrape");
 const skipToCopilot = args.includes("--skip-to-copilot");
 const wordOnly = args.includes("--word-only");
+const refineOnly = args.includes("--refine-only");
+const skipRefine = args.includes("--skip-refine");
+const maxRefinePasses = parseInt(getArg("--max-refine-passes") || "3", 10);
+const noClarify = args.includes("--no-clarify");
+const mergeOnly = args.includes("--merge-only");
+const mergePass = parseInt(getArg("--merge-pass") || "1", 10);
 
 if (!quarter) {
   console.error("Error: --quarter is required (e.g. --quarter Y26Q3)");
@@ -46,13 +63,567 @@ const TEMP_DIR = path.join(ROOT, "temp");
 const FINAL_METRICS = path.join(TEMP_DIR, "final-metrics.md");
 const FLEET_INSTRUCTIONS = path.join(ROOT, "gh-cli-prompts", "quarterly-connect-fleet-instructions.txt");
 const FLEET_PROMPT_FILE = path.join(TEMP_DIR, "fleet-prompt.txt");
+const MEASURING_STICK = path.join(ROOT, "guidance", "measuring-stick.md");
 
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
+// ── Measuring-stick refinement loop (WorkIQ-powered) ───────────────────────
+//
+// HOW IT WORKS:
+//
+// 1. EVALUATE: Send the current Connect draft + measuring stick rubric to
+//    Azure OpenAI. The model scores every cell in the 3-circles × 4-dimensions
+//    grid as "Exceptional", "Successful", or "Lower". It returns structured
+//    JSON with the rating and, for any non-Exceptional cell, a concrete
+//    improvement instruction explaining WHAT is missing and HOW to fix it.
+//
+// 2. CHECK: If the target score (default 10/12) is met, stop.
+//
+// 3. GENERATE WORKIQ PROMPTS: For each non-Exceptional cell, generate a
+//    targeted WorkIQ search prompt. Each prompt focuses on finding evidence
+//    of HOW the author made impact — not just what was delivered, but the
+//    specific actions, decisions, and behaviours that drove the outcome.
+//    Prompts are derived from the evaluation's reasoning + improvement
+//    guidance + the measuring stick's Exceptional-tier language.
+//
+// 4. LAUNCH COPILOT CLI WITH /FLEET: Build a single fleet prompt that runs
+//    all WorkIQ searches in parallel across emails, Teams, documents, and
+//    Loop. The prompt instructs Copilot to save consolidated evidence to
+//    temp/workiq-evidence-pass-{N}.md.
+//
+// 5. MERGE EVIDENCE: After Copilot CLI exits, read the gathered evidence
+//    and use Azure OpenAI to weave it into the Connect draft. The merge
+//    focuses on HOW — the specific actions, decisions, and behaviors that
+//    demonstrate Exceptional-tier impact. New evidence is integrated
+//    naturally; no existing Exceptional content is weakened.
+//
+// 6. RE-EVALUATE: Save the updated draft as Connect-Draft-v{N}.md and
+//    repeat from step 1. The loop runs for at most --max-refine-passes
+//    iterations (default 3).
+//
+// 7. FINALIZE: The best version overwrites Connect-Draft.md.
+
+const TARGET_EXCEPTIONAL_CELLS = parseInt(getArg("--target-score") || "10", 10);
+
+async function createAzureOpenAIClient() {
+  const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
+  const deployment = process.env.AZURE_OPENAI_DEPLOYMENT || "gpt-4o-mini";
+  if (!endpoint) {
+    throw new Error("AZURE_OPENAI_ENDPOINT is not set in .env");
+  }
+  const credential = new DefaultAzureCredential();
+  const azureADTokenProvider = getBearerTokenProvider(
+    credential,
+    "https://cognitiveservices.azure.com/.default"
+  );
+  const client = new AzureOpenAI({
+    endpoint,
+    azureADTokenProvider,
+    apiVersion: "2024-10-21",
+    deployment,
+  });
+  return { client, deployment };
+}
+
+const EVALUATION_SYSTEM_PROMPT = `You are a performance-review evaluator. You will receive:
+1. A "measuring stick" rubric that defines three impact tiers — Exceptional, Successful, and Lower — across four dimensions (Business Acumen, Citizenship, Technical Excellence, Role Excellence) and three circles (Individual Accomplishments, Building on Others, Contributing to Others' Success).
+2. A quarterly Connect draft written by the employee.
+
+Your job is to evaluate the Connect draft against every cell in the 3×4 grid and return a JSON object.
+
+EVALUATION RULES:
+- Rate each cell as "Exceptional", "Successful", or "Lower" based on whether the draft content demonstrates the specific behaviours described in that tier.
+- A cell is "Exceptional" ONLY if the draft contains concrete, evidence-backed content that clearly maps to the Exceptional tier description for that dimension and circle. Pay special attention to whether the draft explains HOW the impact was achieved — the specific actions, decisions, methods, and behaviours — not just WHAT was delivered.
+- If a cell is not Exceptional, you MUST provide a specific, actionable improvement instruction that explains:
+  (a) WHAT is missing or insufficient — reference the exact rubric language the draft fails to satisfy.
+  (b) HOW to fix it — describe what kind of evidence, framing, or "how" narrative would elevate it.
+  (c) SEARCH GUIDANCE — suggest specific WorkIQ search terms (for emails, Teams, documents, Loop) that could surface the missing evidence about HOW impact was made.
+
+Return ONLY valid JSON in this exact schema (no markdown fencing, no commentary):
+{
+  "allExceptional": true/false,
+  "exceptionalCount": <number>,
+  "cells": [
+    {
+      "circle": "Individual Accomplishments",
+      "dimension": "Business Acumen",
+      "rating": "Exceptional",
+      "reasoning": "Brief explanation of why this rating was given",
+      "improvement": null,
+      "searchTerms": null
+    },
+    {
+      "circle": "Individual Accomplishments",
+      "dimension": "Citizenship",
+      "rating": "Successful",
+      "reasoning": "...",
+      "improvement": "Specific instruction on what to change and how",
+      "searchTerms": ["term1", "term2", "term3"]
+    }
+  ]
+}
+
+You must include all 12 cells (3 circles × 4 dimensions). Do not omit any.`;
+
+async function evaluateDraft(client, deployment, draftContent, rubricContent) {
+  const response = await client.chat.completions.create({
+    model: deployment,
+    messages: [
+      { role: "system", content: EVALUATION_SYSTEM_PROMPT },
+      {
+        role: "user",
+        content: `=== MEASURING STICK RUBRIC ===\n\n${rubricContent}\n\n=== END RUBRIC ===\n\n=== CONNECT DRAFT ===\n\n${draftContent}\n\n=== END DRAFT ===`,
+      },
+    ],
+    temperature: 0.1,
+    max_completion_tokens: 4096,
+    response_format: { type: "json_object" },
+  });
+
+  const raw = response.choices[0].message.content;
+  return JSON.parse(raw);
+}
+
+function printEvaluationSummary(evaluation, passLabel) {
+  console.log(`\n  Pass ${passLabel} evaluation results:`);
+  console.log("  " + "─".repeat(56));
+
+  const circles = [
+    "Individual Accomplishments",
+    "Building on Others",
+    "Contributing to Others' Success",
+  ];
+  const dimensions = ["Business Acumen", "Citizenship", "Technical Excellence", "Role Excellence"];
+
+  for (const circle of circles) {
+    console.log(`\n  ${circle}:`);
+    for (const dim of dimensions) {
+      const cell = evaluation.cells.find(
+        (c) => c.circle === circle && c.dimension === dim
+      );
+      if (cell) {
+        const icon = cell.rating === "Exceptional" ? "★" : cell.rating === "Successful" ? "●" : "○";
+        console.log(`    ${icon} ${dim}: ${cell.rating}`);
+      }
+    }
+  }
+
+  const exceptional = evaluation.cells.filter((c) => c.rating === "Exceptional").length;
+  console.log(`\n  Score: ${exceptional}/12 cells at Exceptional impact`);
+  return exceptional;
+}
+
+// ── Interactive search-term clarification ──────────────────────────────────
+
+function askUser(question) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(answer.trim());
+    });
+  });
+}
+
+// Generic terms that are too vague for WorkIQ searches
+const GENERIC_TERMS = new Set([
+  "community engagement", "team recognition", "leadership initiatives",
+  "cross-hub solutions", "organizational improvements", "collaboration outcomes",
+  "hub experiences", "customer interactions", "collaborative projects",
+  "team performance", "collaborative success", "sales growth",
+  "innovative solutions", "stakeholder needs", "business efficiency",
+  "mentoring impact", "team support", "challenge handling",
+  "organizational change", "technical guidance", "product improvement",
+  "reusable work", "peer coaching", "effectiveness improvement",
+  "team motivation", "cultural shifts", "collaboration improvements",
+]);
+
+function isAmbiguous(terms) {
+  if (!terms || terms.length === 0) return true;
+  return terms.every((t) => GENERIC_TERMS.has(t.toLowerCase().trim()));
+}
+
+async function clarifySearchTerms(gaps) {
+  console.log("\n  ── Clarifying ambiguous search terms ──");
+  console.log("  For each gap with vague search terms, provide specific details.");
+  console.log("  Examples: project names, customer names, colleague names, technologies,");
+  console.log("  email subjects, Teams channel names, specific initiatives, etc.");
+  console.log("  Press Enter to skip if you have nothing to add.\n");
+
+  let clarified = 0;
+  for (const gap of gaps) {
+    const terms = gap.searchTerms || [];
+    if (!isAmbiguous(terms)) continue;
+
+    console.log(`  [${ gap.circle } → ${ gap.dimension }] (${ gap.rating })`);
+    console.log(`    Current search terms: ${ terms.join(", ") || "(none)" }`);
+    console.log(`    What the rubric wants: ${ gap.improvement.substring(0, 200) }`);
+    const answer = await askUser("    → Your specific examples/names/projects: ");
+    if (answer) {
+      gap.userContext = answer;
+      clarified++;
+    }
+    console.log();
+  }
+
+  if (clarified > 0) {
+    console.log(`  ✓ Added user context for ${clarified} gap(s).\n`);
+  } else {
+    console.log("  No additional context provided.\n");
+  }
+  return gaps;
+}
+
+// ── WorkIQ prompt generation ───────────────────────────────────────────────
+
+/**
+ * Build short, specific WorkIQ queries from a gap cell.
+ * WorkIQ times out on long narrative queries, so keep each under ~15 words.
+ * Returns an array of 2-3 short query strings.
+ */
+function buildShortQueries(gap, quarter) {
+  const queries = [];
+  const terms = gap.searchTerms || [];
+  const userTerms = gap.userContext ? gap.userContext.split(/,\s*/) : [];
+  const allTerms = [...userTerms, ...terms].filter(Boolean);
+
+  // Quarter date range for context
+  const dateHint = quarter.replace("FY26Q3", "January–March 2026")
+    .replace("FY26Q4", "April–June 2026")
+    .replace("FY26Q2", "October–December 2025")
+    .replace("FY26Q1", "July–September 2025");
+
+  // Build queries from specific terms (max 3 queries per cell)
+  if (allTerms.length > 0) {
+    // Group terms into queries of 2-3 terms each
+    for (let i = 0; i < Math.min(allTerms.length, 6); i += 2) {
+      const chunk = allTerms.slice(i, i + 2).join(", ");
+      queries.push(`${chunk} ${dateHint}`);
+    }
+  }
+
+  // Fallback: dimension-based short query
+  if (queries.length === 0) {
+    const dimQueries = {
+      "Business Acumen": [`customer impact and Azure pipeline ${dateHint}`],
+      "Citizenship": [`community contributions and recognition ${dateHint}`],
+      "Technical Excellence": [`technical architecture and solution design ${dateHint}`],
+      "Role Excellence": [`coaching mentoring and team leadership ${dateHint}`],
+    };
+    queries.push(...(dimQueries[gap.dimension] || [`work accomplishments ${dateHint}`]));
+  }
+
+  return queries.slice(0, 3); // Max 3 queries per cell
+}
+
+function generateWorkIQFleetPrompt(gaps, passNumber, quarter) {
+  // Build workstreams with pre-built short queries
+  const workstreams = gaps.map((gap, idx) => {
+    const queries = buildShortQueries(gap, quarter);
+    const queryBlock = queries.map((q, qi) => `  QUERY ${qi + 1}: "${q}"`).join("\n");
+
+    return `
+WORKSTREAM ${idx + 1}: [${gap.circle} → ${gap.dimension}]
+${queryBlock}
+GOAL: Find evidence of HOW impact was made for this dimension.`;
+  });
+
+  const evidenceFile = path.join(TEMP_DIR, `workiq-evidence-pass-${passNumber}.md`).replace(/\\/g, "/");
+
+  return `Search WorkIQ to find evidence for a quarterly Connect (${quarter}).
+
+IMPORTANT — QUERY RULES:
+- Use ONLY the exact queries listed below. Do NOT rewrite, expand, or combine them.
+- Each query must be sent to WorkIQ as-is — short queries work, long ones time out.
+- Do NOT include the person's name in queries (WorkIQ already scopes to the current user).
+- Run workstreams in parallel.
+
+${workstreams.join("\n")}
+
+For each result, note: Source type, reference, date, people involved, and HOW impact was made.
+
+Save all evidence to: ${evidenceFile}
+
+Format:
+
+# WorkIQ Evidence Gathered — Pass ${passNumber}
+
+## [Circle → Dimension] (Workstream N)
+### Evidence Item 1
+- **Source:** [type] — [reference]
+- **Date:** [date]
+- **People/Orgs:** [names]
+- **HOW (the action/decision/behaviour):** [description]
+- **Why it matters:** [rubric alignment]
+`;
+}
+
+// ── Evidence merge ─────────────────────────────────────────────────────────
+
+// ── Per-cell merge helpers ──────────────────────────────────────────────────
+
+/**
+ * Parse the evidence markdown into per-cell blocks.
+ * Returns a Map: "Circle → Dimension" => evidence text
+ */
+function parseEvidenceByCells(evidenceContent) {
+  const cellMap = new Map();
+  const cellHeaderRe = /^## \[(.+?)\]\s*\(Workstream \d+\)/gm;
+  const headers = [];
+  let m;
+  while ((m = cellHeaderRe.exec(evidenceContent)) !== null) {
+    headers.push({ key: m[1].trim(), index: m.index });
+  }
+  for (let i = 0; i < headers.length; i++) {
+    const start = headers[i].index;
+    const end = i + 1 < headers.length ? headers[i + 1].index : evidenceContent.length;
+    cellMap.set(headers[i].key, evidenceContent.slice(start, end).trim());
+  }
+  return cellMap;
+}
+
+/**
+ * Determine which draft section a cell maps to.
+ * Returns the section header string to insert after.
+ */
+function cellToDraftSection(circle, dimension) {
+  // Map cells to the draft's Part 4 sections
+  const sectionMap = {
+    "Individual Accomplishments": {
+      "Business Acumen": "### A. Reflect on the Past — Results Delivered and How",
+      "Citizenship": "**Community Impact and Technical Leadership**",
+      "Technical Excellence": "### A. Reflect on the Past — Results Delivered and How",
+      "Role Excellence": "**Coaching and Mentoring**",
+    },
+    "Building on Others": {
+      "Business Acumen": "### A. Reflect on the Past — Results Delivered and How",
+      "Citizenship": "**Collaboration and Recognition Culture**",
+      "Technical Excellence": "### A. Reflect on the Past — Results Delivered and How",
+      "Role Excellence": "**Coaching and Mentoring**",
+    },
+    "Contributing to Others' Success": {
+      "Business Acumen": "### A. Reflect on the Past — Results Delivered and How",
+      "Citizenship": "**Community Impact and Technical Leadership**",
+      "Technical Excellence": "### A. Reflect on the Past — Results Delivered and How",
+      "Role Excellence": "**Coaching and Mentoring**",
+    },
+  };
+  return sectionMap[circle]?.[dimension] || "### A. Reflect on the Past — Results Delivered and How";
+}
+
+const MERGE_SYSTEM_PROMPT = `You are a senior performance-review writer. You will receive:
+1. An existing quarterly Connect draft.
+2. An evidence file containing WorkIQ search results organised by rubric dimension.
+
+Your job is to merge the evidence into the Connect draft, producing a complete updated draft.
+
+STRUCTURE RULES:
+- Do NOT use tables anywhere in the output. All content must be natural language paragraphs.
+- For each piece of evidence or accomplishment, structure it as a labelled paragraph block using EXACTLY these fields:
+
+**Theme:** <Sentence(s) describing the overarching theme or category>
+**Claim Summary:** <Sentence(s) summarising the accomplishment or claim>
+**Period:** <Sentence(s) noting the time frame>
+**People / Orgs:** <Sentence(s) naming the people, teams, or organisations involved>
+**What Did I Do:** <Sentence(s) describing the result, outcome, or deliverable>
+**How I Did It:** <Sentence(s) describing the specific actions, decisions, methods, behaviours, and collaborations>
+**Business Value:** <Sentence(s) explaining the impact or value to the business>
+**Related Metric:** <Sentence(s) citing any relevant metrics, numbers, or KPIs>
+
+- Group related items under the appropriate existing section headings in the draft.
+- Where evidence from the evidence file corresponds to content already in the draft, enrich the existing item with the new detail. Do NOT duplicate items.
+- Where evidence introduces entirely new accomplishments not in the draft, add them as new items in the most appropriate section.
+- If a field has no information available, write "N/A" for that field. Do not omit the field.
+
+WRITING RULES:
+- First-person, strategic, professional tone throughout.
+- Keep every number, metric, and date exact — do not round or reinterpret.
+- Do NOT invent evidence. Only use content from the draft and the evidence file.
+- Paraphrase sensitive content — do not copy verbatim.
+- Preserve all existing draft content. Restructure it into the field format above but do not remove information.
+- NEVER use markdown tables (| col | col |). Use only the labelled paragraph format above.
+- METRIC ATTRIBUTION: Many metrics from the Power BI report are team or territory-level aggregates, NOT the individual's personal output. Do not attribute aggregate numbers as personal accomplishments. An individual typically contributes 1–3 engagements per customer. If a metric is labelled as team/territory/org-level, present it as context ("My territory achieved…") rather than a personal claim ("I delivered…"). When scope is ambiguous, default to team/territory attribution.
+
+OUTPUT:
+- Return the complete updated Connect draft in markdown. Nothing else — no preamble, no commentary.`;
+
+async function mergeEvidenceIntoDraft(client, deployment, draftContent, rubricContent, evidenceContent) {
+  console.log(`  Sending draft + evidence to LLM for merge...`);
+
+  const response = await client.chat.completions.create({
+    model: deployment,
+    messages: [
+      { role: "system", content: MERGE_SYSTEM_PROMPT },
+      {
+        role: "user",
+        content:
+          `=== CURRENT CONNECT DRAFT ===\n\n${draftContent}\n\n=== END DRAFT ===\n\n` +
+          `=== EVIDENCE FILE ===\n\n${evidenceContent}\n\n=== END EVIDENCE ===\n\n` +
+          `Merge the evidence into the draft. Structure every accomplishment using the labelled paragraph format (Theme, Claim Summary, Period, People / Orgs, What Did I Do, How I Did It, Business Value, Related Metric). No tables. Return the complete updated draft.`,
+      },
+    ],
+    temperature: 0.3,
+    max_completion_tokens: 16384,
+  });
+
+  const merged = response.choices[0].message.content?.trim();
+  if (!merged) {
+    console.log(`  ⚠ LLM returned empty response. Draft unchanged.`);
+    return draftContent;
+  }
+
+  console.log(`  ✓ Merged draft received (${merged.length} chars)`);
+  return merged;
+}
+
+// ── Main refinement loop ───────────────────────────────────────────────────
+
+async function runRefinementLoop(draftPath, maxPasses) {
+  if (!fs.existsSync(MEASURING_STICK)) {
+    console.error(`Error: Measuring stick not found at ${MEASURING_STICK}`);
+    process.exit(1);
+  }
+  if (!fs.existsSync(draftPath)) {
+    console.error(`Error: Connect draft not found at ${draftPath}`);
+    process.exit(1);
+  }
+
+  const rubricContent = fs.readFileSync(MEASURING_STICK, "utf-8");
+  let draftContent = fs.readFileSync(draftPath, "utf-8");
+
+  console.log("Connecting to Azure OpenAI for measuring-stick evaluation...");
+  const { client, deployment } = await createAzureOpenAIClient();
+
+  for (let pass = 1; pass <= maxPasses; pass++) {
+    console.log(`\n${"═".repeat(60)}`);
+    console.log(`REFINEMENT PASS ${pass}/${maxPasses} — Evaluating draft against measuring stick`);
+    console.log("═".repeat(60));
+
+    // Step 1: Evaluate
+    const evaluation = await evaluateDraft(client, deployment, draftContent, rubricContent);
+
+    // Save evaluation
+    const evalPath = path.join(TEMP_DIR, `evaluation-pass-${pass}.json`);
+    fs.writeFileSync(evalPath, JSON.stringify(evaluation, null, 2), "utf-8");
+    console.log(`  Evaluation saved → ${evalPath}`);
+
+    const exceptionalCount = printEvaluationSummary(evaluation, pass);
+
+    // Step 2: Check if target met
+    if (exceptionalCount >= TARGET_EXCEPTIONAL_CELLS) {
+      console.log(`\n✓ ${exceptionalCount}/12 cells at Exceptional (target: ${TARGET_EXCEPTIONAL_CELLS}). Refinement complete.`);
+      fs.writeFileSync(draftPath, draftContent, "utf-8");
+      return;
+    }
+
+    // Step 3: Collect non-Exceptional cells
+    const gaps = evaluation.cells.filter((c) => c.rating !== "Exceptional");
+    console.log(`\n  ${gaps.length} cell(s) below Exceptional — launching WorkIQ evidence search...`);
+
+    // Step 3b: Clarify ambiguous search terms interactively (pass 1 only)
+    if (!noClarify && pass === 1) {
+      await clarifySearchTerms(gaps);
+    }
+
+    // Step 4: Generate WorkIQ fleet prompt
+    const fleetPrompt = generateWorkIQFleetPrompt(gaps, pass, quarter);
+    const fleetPromptPath = path.join(TEMP_DIR, `workiq-fleet-prompt-pass-${pass}.txt`);
+    fs.writeFileSync(fleetPromptPath, fleetPrompt, "utf-8");
+    console.log(`  Fleet prompt saved → ${fleetPromptPath}`);
+
+    // Step 5: Launch Copilot CLI with prompt file, capture output
+    const evidenceFilePath = path.join(TEMP_DIR, `workiq-evidence-pass-${pass}.md`);
+
+    console.log(`\n  Launching Copilot CLI with -i ${fleetPromptPath}...`);
+    console.log(`  Evidence will be saved to: ${evidenceFilePath}\n`);
+
+    // Delete any stale evidence file so copilot can create a fresh one
+    if (fs.existsSync(evidenceFilePath)) {
+      fs.unlinkSync(evidenceFilePath);
+    }
+
+    try {
+      // Call the copilot Node.js loader directly via execFileSync with args as an array.
+      // This bypasses all shell quoting/splitting issues that plague PowerShell wrappers.
+      const promptContent = fs.readFileSync(fleetPromptPath, "utf-8");
+      const copilotLoader = path.join(process.env.APPDATA, "npm", "node_modules", "@github", "copilot", "npm-loader.js");
+      const copilotOutput = execFileSync("node", [copilotLoader, "--allow-all", "-i", promptContent], {
+        cwd: ROOT, encoding: "utf-8", timeout: 1200000, maxBuffer: 10 * 1024 * 1024,
+      });
+      // Prefer the file copilot created over stdout (stdout is just tool-call summaries)
+      if (fs.existsSync(evidenceFilePath) && fs.statSync(evidenceFilePath).size > 500) {
+        console.log(`  ✓ Copilot finished. Evidence file written by Copilot (${fs.statSync(evidenceFilePath).size} bytes)`);
+      } else {
+        fs.writeFileSync(evidenceFilePath, copilotOutput, "utf-8");
+        console.log(`  ✓ Copilot finished. Output saved from stdout (${copilotOutput.length} chars)`);
+      }
+    } catch (err) {
+      // Copilot may exit non-zero (or timeout) but still produce output
+      // Check if copilot wrote the evidence file directly before falling back to stdout
+      if (fs.existsSync(evidenceFilePath) && fs.statSync(evidenceFilePath).size > 500) {
+        console.log(`  ⚠ Copilot exited with code ${err.status}, but evidence file was written by Copilot (${fs.statSync(evidenceFilePath).size} bytes)`);
+      } else if (err.stdout) {
+        fs.writeFileSync(evidenceFilePath, err.stdout, "utf-8");
+        console.log(`  ⚠ Copilot exited with code ${err.status}, output captured from stdout (${err.stdout.length} chars)`);
+      } else {
+        console.log(`  ⚠ Copilot CLI failed: ${err.message}`);
+      }
+    }
+
+    // Step 6: Read gathered evidence
+    if (!fs.existsSync(evidenceFilePath)) {
+      console.log(`\n  ⚠ Evidence file not found at ${evidenceFilePath}.`);
+      console.log(`    If Copilot saved it elsewhere, copy it to that path and run --refine-only.`);
+      console.log(`    Skipping merge for this pass (no evidence to integrate).\n`);
+    } else {
+      let evidenceContent = fs.readFileSync(evidenceFilePath, "utf-8");
+      const moreEvidencePath = path.join(__dirname, "more-evidence", "more-eveidence.md");
+      if (fs.existsSync(moreEvidencePath)) {
+        const moreEvidence = fs.readFileSync(moreEvidencePath, "utf-8");
+        evidenceContent += "\n\n# Additional Evidence\n\n" + moreEvidence;
+        console.log(`  ✓ Additional evidence loaded (${moreEvidence.length} chars)`);
+      }
+      console.log(`\n  ✓ Evidence file loaded (${evidenceContent.length} chars)`);
+
+      // Step 7: Merge evidence into draft
+      console.log(`  Merging new evidence into Connect draft...`);
+      draftContent = await mergeEvidenceIntoDraft(
+        client, deployment, draftContent, rubricContent, evidenceContent
+      );
+    }
+
+    // Save versioned draft
+    const versionPath = path.join(TEMP_DIR, `Connect-Draft-v${pass}.md`);
+    fs.writeFileSync(versionPath, draftContent, "utf-8");
+    console.log(`  Refined draft saved → ${versionPath}`);
+  }
+
+  // Final evaluation after last pass
+  console.log(`\n${"═".repeat(60)}`);
+  console.log(`FINAL EVALUATION — Post-refinement check`);
+  console.log("═".repeat(60));
+
+  const finalEval = await evaluateDraft(client, deployment, draftContent, rubricContent);
+  const finalEvalPath = path.join(TEMP_DIR, `evaluation-final.json`);
+  fs.writeFileSync(finalEvalPath, JSON.stringify(finalEval, null, 2), "utf-8");
+  const finalCount = printEvaluationSummary(finalEval, "final");
+
+  if (finalCount >= TARGET_EXCEPTIONAL_CELLS) {
+    console.log(`\n✓ ${finalCount}/12 cells at Exceptional (target: ${TARGET_EXCEPTIONAL_CELLS}). Refinement complete.`);
+  } else {
+    console.log(`\n⚠ ${finalCount}/12 cells at Exceptional after ${maxPasses} passes (target: ${TARGET_EXCEPTIONAL_CELLS}).`);
+    console.log(`  Review the remaining gaps in ${finalEvalPath} and consider:`);
+    console.log(`  - Adding missing evidence manually where [EVIDENCE NEEDED] placeholders appear`);
+    console.log(`  - Running again with --refine-only --max-refine-passes <N>`);
+  }
+
+  // Overwrite the main draft with the best version
+  fs.writeFileSync(draftPath, draftContent, "utf-8");
+}
+
 // ── Generate Word doc from markdown ────────────────────────────────────────
 function generateWordDoc(mdContent, outputPath) {
-  const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType,
-          Table, TableRow, TableCell, WidthType, BorderStyle, ShadingType } = docx;
+  const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } = docx;
 
   const children = [];
   const lines = mdContent.split(/\r?\n/);
@@ -82,81 +653,9 @@ function generateWordDoc(mdContent, outputPath) {
     return runs;
   }
 
-  // Detect if a line is a Markdown table row: | col1 | col2 | ...
-  function isTableRow(line) {
-    return /^\|(.+\|)+\s*$/.test(line.trim());
-  }
-
-  // Detect separator row: |---|---|  or | :---: | --- |
-  function isSeparatorRow(line) {
-    return /^\|(\s*:?-+:?\s*\|)+\s*$/.test(line.trim());
-  }
-
-  // Parse a table row into cell text values
-  function parseCells(line) {
-    return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(c => c.trim());
-  }
-
-  // Build a native Word table from collected rows
-  function buildTable(headerCells, dataRows) {
-    const borderStyle = {
-      style: BorderStyle.SINGLE,
-      size: 1,
-      color: "999999",
-    };
-    const borders = {
-      top: borderStyle,
-      bottom: borderStyle,
-      left: borderStyle,
-      right: borderStyle,
-    };
-
-    // Header row
-    const headerRow = new TableRow({
-      tableHeader: true,
-      children: headerCells.map(cell => new TableCell({
-        borders,
-        shading: { type: ShadingType.SOLID, color: "D9E2F3" },
-        children: [new Paragraph({ children: [new TextRun({ text: cell, bold: true, size: 20 })] })],
-      })),
-    });
-
-    // Data rows
-    const rows = dataRows.map(cells => new TableRow({
-      children: cells.map(cell => new TableCell({
-        borders,
-        children: [new Paragraph({ children: parseInline(cell) })],
-      })),
-    }));
-
-    return new Table({
-      width: { size: 100, type: WidthType.PERCENTAGE },
-      rows: [headerRow, ...rows],
-    });
-  }
-
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
-
-    // ── Table detection: look ahead for header | separator | data rows ──
-    if (isTableRow(line) && i + 1 < lines.length && isSeparatorRow(lines[i + 1])) {
-      const headerCells = parseCells(line);
-      i += 2; // skip header + separator
-      const dataRows = [];
-      while (i < lines.length && isTableRow(lines[i]) && !isSeparatorRow(lines[i])) {
-        const cells = parseCells(lines[i]);
-        // Pad or trim to match header column count
-        while (cells.length < headerCells.length) cells.push("");
-        dataRows.push(cells.slice(0, headerCells.length));
-        i++;
-      }
-      children.push(buildTable(headerCells, dataRows));
-      children.push(new Paragraph({ children: [] })); // spacing after table
-      continue;
-    }
-
-    // ── Headings ──
     if (line.startsWith("#### ")) {
       children.push(new Paragraph({ heading: HeadingLevel.HEADING_4, children: parseInline(line.slice(5)) }));
     } else if (line.startsWith("### ")) {
@@ -172,7 +671,7 @@ function generateWordDoc(mdContent, outputPath) {
         indent: { left: 720 },
         children: parseInline(line.replace(/^>\s*/, "")),
       }));
-    } else if (/^\s*[-*]\s/.test(line) && !isTableRow(line)) {
+    } else if (/^\s*[-*]\s/.test(line)) {
       children.push(new Paragraph({
         bullet: { level: 0 },
         children: parseInline(line.replace(/^\s*[-*]\s+/, "")),
@@ -223,6 +722,70 @@ if (wordOnly) {
     process.exit(0);
   }).catch((err) => {
     console.error("Failed to generate Word document:", err.message);
+    process.exit(1);
+  });
+} else if (mergeOnly) {
+  // ── Merge-only mode: apply existing evidence to draft and generate Word doc ─
+  const draftPath = path.join(TEMP_DIR, "Connect-Draft.md");
+  const evidencePath = path.join(TEMP_DIR, `workiq-evidence-pass-${mergePass}.md`);
+
+  if (!fs.existsSync(draftPath)) {
+    console.error(`Error: ${draftPath} not found.`);
+    process.exit(1);
+  }
+  if (!fs.existsSync(evidencePath)) {
+    console.error(`Error: ${evidencePath} not found.`);
+    process.exit(1);
+  }
+
+  (async () => {
+    const rubricContent = fs.readFileSync(MEASURING_STICK, "utf-8");
+    let draftContent = fs.readFileSync(draftPath, "utf-8");
+    let evidenceContent = fs.readFileSync(evidencePath, "utf-8");
+    const moreEvidencePath = path.join(__dirname, "more-evidence", "more-eveidence.md");
+    if (fs.existsSync(moreEvidencePath)) {
+      const moreEvidence = fs.readFileSync(moreEvidencePath, "utf-8");
+      evidenceContent += "\n\n# Additional Evidence\n\n" + moreEvidence;
+      console.log(`  ✓ Additional evidence loaded (${moreEvidence.length} chars)`);
+    }
+
+    console.log(`Merging evidence from pass ${mergePass} into Connect draft...`);
+    console.log(`  Draft: ${draftContent.length} chars`);
+    console.log(`  Evidence: ${evidenceContent.length} chars`);
+
+    const { client, deployment } = await createAzureOpenAIClient();
+    draftContent = await mergeEvidenceIntoDraft(
+      client, deployment, draftContent, rubricContent, evidenceContent
+    );
+
+    fs.writeFileSync(draftPath, draftContent, "utf-8");
+    console.log(`\n✓ Merged draft saved → ${draftPath}`);
+
+    console.log("\nGenerating Word document...");
+    const wordPath = path.join(TEMP_DIR, "final.docx");
+    await generateWordDoc(draftContent, wordPath);
+    console.log(`✓ Word document saved → ${wordPath}`);
+  })().catch((err) => {
+    console.error("Merge failed:", err.message);
+    process.exit(1);
+  });
+} else if (refineOnly) {
+  // ── Refine-only mode: run measuring-stick loop on existing draft ──────────
+  const draftPath = path.join(TEMP_DIR, "Connect-Draft.md");
+
+  (async () => {
+    await runRefinementLoop(draftPath, maxRefinePasses);
+
+    console.log("\n" + "═".repeat(60));
+    console.log("Generating Word document from refined draft...");
+    console.log("═".repeat(60));
+
+    const mdContent = fs.readFileSync(draftPath, "utf-8");
+    const wordPath = path.join(TEMP_DIR, "final.docx");
+    await generateWordDoc(mdContent, wordPath);
+    console.log(`✓ Word document saved → ${wordPath}`);
+  })().catch((err) => {
+    console.error("Refinement failed:", err.message);
     process.exit(1);
   });
 } else {
@@ -333,20 +896,34 @@ try {
 }
 
 console.log("\n" + "═".repeat(60));
-console.log("Copilot session ended. Generating Word document...");
+console.log("Copilot session ended.");
 console.log("═".repeat(60));
 
 const draftPath = path.join(TEMP_DIR, "Connect-Draft.md");
 if (fs.existsSync(draftPath)) {
-  const mdContent = fs.readFileSync(draftPath, "utf-8");
-  const wordPath = path.join(TEMP_DIR, "final.docx");
-  generateWordDoc(mdContent, wordPath).then(() => {
+  (async () => {
+    // ── Step 5: Measuring-stick refinement loop ──────────────────────────────
+    if (!skipRefine) {
+      await runRefinementLoop(draftPath, maxRefinePasses);
+    } else {
+      console.log("\nSkipping refinement loop (--skip-refine).");
+    }
+
+    // ── Step 6: Generate Word document ────────────────────────────────────────
+    console.log("\n" + "═".repeat(60));
+    console.log("Generating Word document...");
+    console.log("═".repeat(60));
+
+    const mdContent = fs.readFileSync(draftPath, "utf-8");
+    const wordPath = path.join(TEMP_DIR, "final.docx");
+    await generateWordDoc(mdContent, wordPath);
     console.log(`✓ Word document saved → ${wordPath}`);
-  }).catch((err) => {
-    console.error("Failed to generate Word document:", err.message);
+  })().catch((err) => {
+    console.error("Post-Copilot processing failed:", err.message);
+    process.exit(1);
   });
 } else {
-  console.log(`Connect-Draft.md not found at ${draftPath}. Skipping Word generation.`);
+  console.log(`Connect-Draft.md not found at ${draftPath}. Skipping refinement and Word generation.`);
   console.log(`If the draft was saved elsewhere, run: node run-connect.js --word-only --quarter ${quarter}`);
 }
 } // end else (full pipeline)

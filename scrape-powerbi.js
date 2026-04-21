@@ -253,12 +253,17 @@ function ensureDir(dir) {
       {
         role: "system",
         content:
-          "You are a business analyst. The user will provide raw text and one or more screenshot images from a Power BI quarterly performance report. " +
+          "You are a business analyst. The user will provide raw text and one or more screenshot images from a Power BI quarterly performance report for an individual contributor. " +
           "Use both the text and all the images to extract every visible metric, KPI, and data point. " +
           "Organise them into a clean, well-structured **Markdown** summary grouped by theme " +
           "(e.g. Customer Satisfaction, Engagements, Outcomes, Solution Areas, Journeys, Opportunities). " +
           "Use Markdown headings (##, ###), bullet lists, bold for metric names, and tables where appropriate. " +
-          "Keep every number exact — do not round or invent data. Use concise business-ready prose.",
+          "Keep every number exact — do not round or invent data. Use concise business-ready prose. " +
+          "IMPORTANT: Many metrics on the dashboard are TEAM or ORG-LEVEL aggregates, NOT the individual's personal output. " +
+          "Clearly label each metric's scope (e.g. 'Team total', 'Org-wide', 'Individual'). " +
+          "For example, if the report shows 12 ADS engagements for a territory, do NOT present that as the individual doing 12 engagements — " +
+          "an individual typically contributes 1–3 engagements per customer. " +
+          "When scope is ambiguous, default to labelling it as a team/territory metric rather than a personal one.",
       },
       {
         role: "user",

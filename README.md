@@ -66,6 +66,32 @@ node run-connect.js --quarter FY26Q3 --skip-scrape
 4. Prompt is copied to clipboard
 5. Copilot CLI auth is verified (auto-login if needed)
 6. Copilot CLI launches with the fleet prompt pre-loaded via `copilot -i`
+7. The Connect draft is evaluated against the measuring-stick rubric and iteratively refined until every cell reaches "Exceptional impact" (or max passes reached)
+
+### Refinement-only mode
+
+Re-run the measuring-stick evaluation loop on an existing `Connect-Draft.md`:
+
+```powershell
+node run-connect.js --refine-only --quarter FY26Q3
+node run-connect.js --refine-only --max-refine-passes 5 --quarter FY26Q3
+```
+
+### Skip refinement
+
+Run the full pipeline but skip the post-Copilot refinement loop:
+
+```powershell
+node run-connect.js --quarter FY26Q3 --skip-refine
+```
+
+### Set target score
+
+By default the loop stops when 10/12 cells reach Exceptional. Override with:
+
+```powershell
+node run-connect.js --refine-only --target-score 12 --quarter FY26Q3
+```
 
 ### Scrape only
 

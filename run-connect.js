@@ -490,6 +490,8 @@ async function runRefinementLoop(draftPath, maxPasses) {
 
   const rubricContent = fs.readFileSync(MEASURING_STICK, "utf-8");
   let draftContent = fs.readFileSync(draftPath, "utf-8");
+  let bestDraftContent = draftContent;
+  let bestExceptionalCount = 0;
 
   console.log("Connecting to Azure OpenAI for measuring-stick evaluation...");
   const { client, deployment } = await createAzureOpenAIClient();
@@ -509,10 +511,16 @@ async function runRefinementLoop(draftPath, maxPasses) {
 
     const exceptionalCount = printEvaluationSummary(evaluation, pass);
 
+    // Track baseline on first pass
+    if (pass === 1) {
+      bestExceptionalCount = exceptionalCount;
+    }
+
     // Step 2: Check if target met
     if (exceptionalCount >= TARGET_EXCEPTIONAL_CELLS) {
       console.log(`\n✓ ${exceptionalCount}/12 cells at Exceptional (target: ${TARGET_EXCEPTIONAL_CELLS}). Refinement complete.`);
-      fs.writeFileSync(draftPath, draftContent, "utf-8");
+      bestDraftContent = draftContent;
+      fs.writeFileSync(draftPath, bestDraftContent, "utf-8");
       return;
     }
 
@@ -587,12 +595,27 @@ async function runRefinementLoop(draftPath, maxPasses) {
 
       // Step 7: Merge evidence into draft
       console.log(`  Merging new evidence into Connect draft...`);
-      draftContent = await mergeEvidenceIntoDraft(
+      const candidateDraft = await mergeEvidenceIntoDraft(
         client, deployment, draftContent, rubricContent, evidenceContent
       );
+
+      // Step 8: Re-evaluate the candidate draft and only keep if score improved
+      console.log(`  Re-evaluating merged draft...`);
+      const candidateEval = await evaluateDraft(client, deployment, candidateDraft, rubricContent);
+      const candidateCount = printEvaluationSummary(candidateEval, `${pass}-candidate`);
+
+      if (candidateCount > bestExceptionalCount) {
+        console.log(`\n  ✓ Score improved: ${bestExceptionalCount} → ${candidateCount} Exceptional. Keeping merged draft.`);
+        draftContent = candidateDraft;
+        bestDraftContent = candidateDraft;
+        bestExceptionalCount = candidateCount;
+      } else {
+        console.log(`\n  ⚠ Score did not improve (${candidateCount} vs best ${bestExceptionalCount}). Discarding this pass's merge.`);
+        draftContent = bestDraftContent; // revert to best known draft
+      }
     }
 
-    // Save versioned draft
+    // Save versioned draft (always the best so far)
     const versionPath = path.join(TEMP_DIR, `Connect-Draft-v${pass}.md`);
     fs.writeFileSync(versionPath, draftContent, "utf-8");
     console.log(`  Refined draft saved → ${versionPath}`);
@@ -603,7 +626,7 @@ async function runRefinementLoop(draftPath, maxPasses) {
   console.log(`FINAL EVALUATION — Post-refinement check`);
   console.log("═".repeat(60));
 
-  const finalEval = await evaluateDraft(client, deployment, draftContent, rubricContent);
+  const finalEval = await evaluateDraft(client, deployment, bestDraftContent, rubricContent);
   const finalEvalPath = path.join(TEMP_DIR, `evaluation-final.json`);
   fs.writeFileSync(finalEvalPath, JSON.stringify(finalEval, null, 2), "utf-8");
   const finalCount = printEvaluationSummary(finalEval, "final");
@@ -618,7 +641,7 @@ async function runRefinementLoop(draftPath, maxPasses) {
   }
 
   // Overwrite the main draft with the best version
-  fs.writeFileSync(draftPath, draftContent, "utf-8");
+  fs.writeFileSync(draftPath, bestDraftContent, "utf-8");
 }
 
 // ── Generate Word doc from markdown ────────────────────────────────────────

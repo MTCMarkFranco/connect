@@ -28,6 +28,7 @@ const { execFileSync, execSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
+const crypto = require("crypto");
 const docx = require("docx");
 const { AzureOpenAI } = require("openai");
 const { DefaultAzureCredential, getBearerTokenProvider } = require("@azure/identity");
@@ -52,6 +53,12 @@ const maxRefinePasses = parseInt(getArg("--max-refine-passes") || "3", 10);
 const noClarify = args.includes("--no-clarify");
 const mergeOnly = args.includes("--merge-only");
 const mergePass = parseInt(getArg("--merge-pass") || "1", 10);
+const workiqMaxConcurrency = Math.max(1, parseInt(getArg("--workiq-max-concurrency") || "4", 10));
+const workiqBatchSize = Math.max(1, parseInt(getArg("--workiq-batch-size") || String(workiqMaxConcurrency), 10));
+const workiqJitterMinMs = Math.max(0, parseInt(getArg("--workiq-jitter-min-ms") || "1200", 10));
+const workiqJitterMaxMs = Math.max(workiqJitterMinMs, parseInt(getArg("--workiq-jitter-max-ms") || "6000", 10));
+const workiqRetries = Math.max(0, parseInt(getArg("--workiq-retries") || "2", 10));
+const workiqRetryBackoffMs = Math.max(0, parseInt(getArg("--workiq-retry-backoff-ms") || "4000", 10));
 
 if (!quarter) {
   console.error("Error: --quarter is required (e.g. --quarter Y26Q3)");
@@ -317,7 +324,10 @@ function buildShortQueries(gap, quarter) {
   return queries.slice(0, 3); // Max 3 queries per cell
 }
 
-function generateWorkIQFleetPrompt(gaps, passNumber, quarter) {
+function generateWorkIQFleetPrompt(gaps, passNumber, quarter, options = {}) {
+  const parallelLimit = options.parallelLimit || workiqMaxConcurrency;
+  const batchLabel = options.batchLabel ? ` (${options.batchLabel})` : "";
+
   // Build workstreams with pre-built short queries
   const workstreams = gaps.map((gap, idx) => {
     const queries = buildShortQueries(gap, quarter);
@@ -331,13 +341,13 @@ GOAL: Find evidence of HOW impact was made for this dimension.`;
 
   const evidenceFile = path.join(TEMP_DIR, `workiq-evidence-pass-${passNumber}.md`).replace(/\\/g, "/");
 
-  return `Search WorkIQ to find evidence for a quarterly Connect (${quarter}).
+  return `Search WorkIQ to find evidence for a quarterly Connect (${quarter})${batchLabel}.
 
 IMPORTANT — QUERY RULES:
 - Use ONLY the exact queries listed below. Do NOT rewrite, expand, or combine them.
 - Each query must be sent to WorkIQ as-is — short queries work, long ones time out.
 - Do NOT include the person's name in queries (WorkIQ already scopes to the current user).
-- Run workstreams in parallel.
+- Run workstreams in parallel, but cap active workstreams at ${parallelLimit}.
 - Exclude personal/private life content completely. Ignore items such as banking, mortgage renewal, personal finance, family, health, travel, social plans, or non-work admin.
 - Include only work-relevant evidence tied to professional impact, delivery, collaboration, leadership, coaching, or community contributions.
 
@@ -360,6 +370,92 @@ Format:
 - **HOW (the action/decision/behaviour):** [description]
 - **Why it matters:** [rubric alignment]
 `;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function randomIntInclusive(min, max) {
+  if (max <= min) return min;
+  return crypto.randomInt(min, max + 1);
+}
+
+function getWorkIQJitterMs() {
+  return randomIntInclusive(workiqJitterMinMs, workiqJitterMaxMs);
+}
+
+function chunkArray(items, size) {
+  const chunks = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
+function looksLikeMcpTimeout(text) {
+  if (!text) return false;
+  return /MCP error -32001|Request timed out|timed out/i.test(text);
+}
+
+function runCopilotEvidenceCapture(fleetPromptPath, evidenceFilePath) {
+  try {
+    const promptContent = fs.readFileSync(fleetPromptPath, "utf-8");
+    const copilotLoader = path.join(process.env.APPDATA, "npm", "node_modules", "@github", "copilot", "npm-loader.js");
+    const copilotOutput = execFileSync("node", [copilotLoader, "--allow-all", "-i", promptContent], {
+      cwd: ROOT, encoding: "utf-8", timeout: 1200000, maxBuffer: 10 * 1024 * 1024,
+    });
+
+    if (fs.existsSync(evidenceFilePath) && fs.statSync(evidenceFilePath).size > 500) {
+      return {
+        ok: true,
+        fromFile: true,
+        timedOut: false,
+        output: copilotOutput || "",
+        bytes: fs.statSync(evidenceFilePath).size,
+      };
+    }
+
+    fs.writeFileSync(evidenceFilePath, copilotOutput, "utf-8");
+    return {
+      ok: true,
+      fromFile: false,
+      timedOut: looksLikeMcpTimeout(copilotOutput),
+      output: copilotOutput || "",
+      bytes: (copilotOutput || "").length,
+    };
+  } catch (err) {
+    if (fs.existsSync(evidenceFilePath) && fs.statSync(evidenceFilePath).size > 500) {
+      const content = fs.readFileSync(evidenceFilePath, "utf-8");
+      return {
+        ok: true,
+        fromFile: true,
+        timedOut: looksLikeMcpTimeout(content) || looksLikeMcpTimeout(err.stdout || "") || looksLikeMcpTimeout(err.message || ""),
+        output: content,
+        bytes: fs.statSync(evidenceFilePath).size,
+      };
+    }
+
+    if (err.stdout) {
+      fs.writeFileSync(evidenceFilePath, err.stdout, "utf-8");
+      return {
+        ok: false,
+        fromFile: false,
+        timedOut: looksLikeMcpTimeout(err.stdout) || looksLikeMcpTimeout(err.message || ""),
+        output: err.stdout,
+        bytes: err.stdout.length,
+      };
+    }
+
+    return {
+      ok: false,
+      fromFile: false,
+      timedOut: looksLikeMcpTimeout(err.message || ""),
+      output: "",
+      bytes: 0,
+      message: err.message,
+    };
+  }
 }
 
 // ── Evidence merge ─────────────────────────────────────────────────────────
@@ -543,49 +639,97 @@ async function runRefinementLoop(draftPath, maxPasses) {
       await clarifySearchTerms(gaps);
     }
 
-    // Step 4: Generate WorkIQ fleet prompt
-    const fleetPrompt = generateWorkIQFleetPrompt(gaps, pass, quarter);
-    const fleetPromptPath = path.join(TEMP_DIR, `workiq-fleet-prompt-pass-${pass}.txt`);
-    fs.writeFileSync(fleetPromptPath, fleetPrompt, "utf-8");
-    console.log(`  Fleet prompt saved → ${fleetPromptPath}`);
-
-    // Step 5: Launch Copilot CLI with prompt file, capture output
+    // Step 4: Generate WorkIQ fleet prompts in smaller, jittered batches
     const evidenceFilePath = path.join(TEMP_DIR, `workiq-evidence-pass-${pass}.md`);
+    const gapBatches = chunkArray(gaps, workiqBatchSize);
+    const batchEvidencePaths = [];
 
-    console.log(`\n  Launching Copilot CLI with -i ${fleetPromptPath}...`);
-    console.log(`  Evidence will be saved to: ${evidenceFilePath}\n`);
-
-    // Delete any stale evidence file so copilot can create a fresh one
+    // Delete any stale pass-level evidence file so we can combine fresh batch files
     if (fs.existsSync(evidenceFilePath)) {
       fs.unlinkSync(evidenceFilePath);
     }
 
-    try {
-      // Call the copilot Node.js loader directly via execFileSync with args as an array.
-      // This bypasses all shell quoting/splitting issues that plague PowerShell wrappers.
-      const promptContent = fs.readFileSync(fleetPromptPath, "utf-8");
-      const copilotLoader = path.join(process.env.APPDATA, "npm", "node_modules", "@github", "copilot", "npm-loader.js");
-      const copilotOutput = execFileSync("node", [copilotLoader, "--allow-all", "-i", promptContent], {
-        cwd: ROOT, encoding: "utf-8", timeout: 1200000, maxBuffer: 10 * 1024 * 1024,
+    console.log(`  WorkIQ batching enabled: ${gapBatches.length} batch(es), batch size ${workiqBatchSize}, concurrency cap ${workiqMaxConcurrency}`);
+    console.log(`  Jitter window: ${workiqJitterMinMs}-${workiqJitterMaxMs} ms; retries per batch: ${workiqRetries}`);
+
+    for (let batchIndex = 0; batchIndex < gapBatches.length; batchIndex++) {
+      const batchGaps = gapBatches[batchIndex];
+      const batchNumber = batchIndex + 1;
+      const batchLabel = `pass-${pass}-batch-${batchNumber}-of-${gapBatches.length}`;
+      const fleetPrompt = generateWorkIQFleetPrompt(batchGaps, pass, quarter, {
+        parallelLimit: workiqMaxConcurrency,
+        batchLabel,
       });
-      // Prefer the file copilot created over stdout (stdout is just tool-call summaries)
-      if (fs.existsSync(evidenceFilePath) && fs.statSync(evidenceFilePath).size > 500) {
-        console.log(`  ✓ Copilot finished. Evidence file written by Copilot (${fs.statSync(evidenceFilePath).size} bytes)`);
-      } else {
-        fs.writeFileSync(evidenceFilePath, copilotOutput, "utf-8");
-        console.log(`  ✓ Copilot finished. Output saved from stdout (${copilotOutput.length} chars)`);
+      const fleetPromptPath = path.join(TEMP_DIR, `workiq-fleet-prompt-pass-${pass}-batch-${batchNumber}.txt`);
+      const batchEvidencePath = path.join(TEMP_DIR, `workiq-evidence-pass-${pass}-batch-${batchNumber}.md`);
+      batchEvidencePaths.push(batchEvidencePath);
+
+      fs.writeFileSync(fleetPromptPath, fleetPrompt, "utf-8");
+      console.log(`\n  Batch ${batchNumber}/${gapBatches.length}: prompt saved → ${fleetPromptPath}`);
+      console.log(`  Batch ${batchNumber}/${gapBatches.length}: evidence target → ${batchEvidencePath}`);
+
+      if (fs.existsSync(batchEvidencePath)) {
+        fs.unlinkSync(batchEvidencePath);
       }
-    } catch (err) {
-      // Copilot may exit non-zero (or timeout) but still produce output
-      // Check if copilot wrote the evidence file directly before falling back to stdout
-      if (fs.existsSync(evidenceFilePath) && fs.statSync(evidenceFilePath).size > 500) {
-        console.log(`  ⚠ Copilot exited with code ${err.status}, but evidence file was written by Copilot (${fs.statSync(evidenceFilePath).size} bytes)`);
-      } else if (err.stdout) {
-        fs.writeFileSync(evidenceFilePath, err.stdout, "utf-8");
-        console.log(`  ⚠ Copilot exited with code ${err.status}, output captured from stdout (${err.stdout.length} chars)`);
-      } else {
-        console.log(`  ⚠ Copilot CLI failed: ${err.message}`);
+
+      const jitterMs = getWorkIQJitterMs();
+      if (batchNumber > 1 && jitterMs > 0) {
+        console.log(`  Staggering WorkIQ call by ${jitterMs} ms to reduce timeout contention...`);
+        await sleep(jitterMs);
       }
+
+      let success = false;
+      for (let attempt = 0; attempt <= workiqRetries; attempt++) {
+        const attemptNumber = attempt + 1;
+        console.log(`  Launching Copilot for batch ${batchNumber}/${gapBatches.length} (attempt ${attemptNumber}/${workiqRetries + 1})...`);
+        const result = runCopilotEvidenceCapture(fleetPromptPath, batchEvidencePath);
+
+        if (result.ok) {
+          const source = result.fromFile ? "file" : "stdout";
+          console.log(`  ✓ Batch ${batchNumber} completed from ${source} (${result.bytes} bytes)`);
+          success = true;
+          break;
+        }
+
+        if (result.timedOut && attempt < workiqRetries) {
+          const backoff = workiqRetryBackoffMs * (attempt + 1);
+          const retryJitter = getWorkIQJitterMs();
+          console.log(`  ⚠ Batch ${batchNumber} hit MCP timeout signature. Retrying after ${backoff + retryJitter} ms...`);
+          await sleep(backoff + retryJitter);
+          continue;
+        }
+
+        if (!result.timedOut && attempt < workiqRetries) {
+          const retryJitter = getWorkIQJitterMs();
+          console.log(`  ⚠ Batch ${batchNumber} failed. Retrying after ${retryJitter} ms...`);
+          await sleep(retryJitter);
+          continue;
+        }
+
+        console.log(`  ⚠ Batch ${batchNumber} failed after ${workiqRetries + 1} attempt(s).`);
+        if (result.message) {
+          console.log(`    Last error: ${result.message}`);
+        }
+      }
+
+      if (!success) {
+        console.log(`  ⚠ Continuing with next batch; this batch may have partial evidence only.`);
+      }
+    }
+
+    const combinedBatchEvidence = [];
+    for (let i = 0; i < batchEvidencePaths.length; i++) {
+      const batchPath = batchEvidencePaths[i];
+      if (!fs.existsSync(batchPath)) continue;
+      const content = fs.readFileSync(batchPath, "utf-8").trim();
+      if (!content) continue;
+      combinedBatchEvidence.push(`# Batch ${i + 1}\n\n${content}`);
+    }
+
+    if (combinedBatchEvidence.length > 0) {
+      const joined = combinedBatchEvidence.join("\n\n---\n\n") + "\n";
+      fs.writeFileSync(evidenceFilePath, joined, "utf-8");
+      console.log(`\n  ✓ Combined pass evidence saved → ${evidenceFilePath} (${joined.length} chars)`);
     }
 
     // Step 6: Read gathered evidence

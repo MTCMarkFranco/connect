@@ -1,5 +1,5 @@
 /**
- * run-connect.js
+ * baby-carlos.js
  *
  * Single orchestration script that runs all steps end-to-end:
  *   1. Scrape Power BI report (Playwright + Edge)
@@ -12,16 +12,16 @@
  *      until every dimension reaches "Exceptional impact"
  *
  * Usage:
- *   node run-connect.js --quarter FY26Q3
- *   node run-connect.js --quarter FY26Q3 --headless
- *   node run-connect.js --quarter FY26Q3 --headless --date-range "Jan 1, 2026 - Mar 31, 2026"
- *   node run-connect.js --skip-scrape --quarter FY26Q3   # reuse existing final-metrics.md
- *   node run-connect.js --skip-to-copilot --quarter FY26Q3 # jump straight to Copilot CLI
- *   node run-connect.js --word-only --quarter FY26Q3       # generate final.docx from existing temp/ files
- *   node run-connect.js --refine-only --quarter FY26Q3     # run only the measuring-stick refinement loop
- *   node run-connect.js --skip-refine --quarter FY26Q3     # skip the refinement loop
- *   node run-connect.js --max-refine-passes 5 --quarter FY26Q3  # set max refinement iterations (default 3)
- *   node run-connect.js --target-score 10 --quarter FY26Q3      # set target Exceptional cells (default 10 of 12)
+ *   node baby-carlos.js --quarter FY26Q3
+ *   node baby-carlos.js --quarter FY26Q3 --headless
+ *   node baby-carlos.js --quarter FY26Q3 --headless --date-range "Jan 1, 2026 - Mar 31, 2026"
+ *   node baby-carlos.js --skip-scrape --quarter FY26Q3   # reuse existing final-metrics.md
+ *   node baby-carlos.js --skip-to-copilot --quarter FY26Q3 # jump straight to Copilot CLI
+ *   node baby-carlos.js --word-only --quarter FY26Q3       # generate final.docx from existing temp/ files
+ *   node baby-carlos.js --refine-only --quarter FY26Q3     # run only the measuring-stick refinement loop
+ *   node baby-carlos.js --skip-refine --quarter FY26Q3     # skip the refinement loop
+ *   node baby-carlos.js --max-refine-passes 5 --quarter FY26Q3  # set max refinement iterations (default 3)
+ *   node baby-carlos.js --target-score 10 --quarter FY26Q3      # set target Exceptional cells (default 10 of 12)
  */
 
 const { execFileSync, execSync } = require("child_process");
@@ -1134,6 +1134,7 @@ if (fs.existsSync(draftPath)) {
   });
 } else {
   console.log(`Connect-Draft.md not found at ${draftPath}. Skipping refinement and Word generation.`);
-  console.log(`If the draft was saved elsewhere, run: node run-connect.js --word-only --quarter ${quarter}`);
+  console.log(`If the draft was saved elsewhere, run: node baby-carlos.js --word-only --quarter ${quarter}`);
 }
 } // end else (full pipeline)
+

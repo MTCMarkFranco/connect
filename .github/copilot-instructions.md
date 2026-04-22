@@ -6,7 +6,7 @@ This is an automated pipeline for producing a quarterly Connect draft. It combin
 
 **Key files:**
 
-- `run-connect.js` — Main orchestrator. Runs the full pipeline end-to-end (scrape → summarise → merge prompt → launch Copilot CLI). Also generates a Word `.docx` from the final markdown draft.
+- `baby-carlos.js` — Main orchestrator. Runs the full pipeline end-to-end (scrape → summarise → merge prompt → launch Copilot CLI). Also generates a Word `.docx` from the final markdown draft.
 - `scrape-powerbi.js` — Playwright script that opens a Power BI report in Edge, captures screenshots + text, and sends them to Azure OpenAI for multi-modal summarisation.
 - `gh-cli-prompts/quarterly-connect-fleet-instructions.txt` — The agent execution spec (source of truth for the `/fleet` workflow, evidence coverage, evidence schema, quality bar, and output structure).
 - `README.md` — Human/operator setup guide.
@@ -20,19 +20,19 @@ There are no build, lint, or test commands. The repo has these workflow commands
 
 ```powershell
 # Full pipeline (headed browser for first-time Power BI login)
-node run-connect.js --quarter FY26Q3
+node baby-carlos.js --quarter FY26Q3
 
 # Subsequent runs (headless, reuses cached auth)
-node run-connect.js --quarter FY26Q3 --headless
+node baby-carlos.js --quarter FY26Q3 --headless
 
 # Skip scraping, reuse existing metrics
-node run-connect.js --quarter FY26Q3 --skip-scrape
+node baby-carlos.js --quarter FY26Q3 --skip-scrape
 
 # Jump straight to Copilot CLI (requires prior run)
-node run-connect.js --skip-to-copilot --quarter FY26Q3
+node baby-carlos.js --skip-to-copilot --quarter FY26Q3
 
 # Regenerate Word doc from existing Connect-Draft.md
-node run-connect.js --word-only --quarter FY26Q3
+node baby-carlos.js --word-only --quarter FY26Q3
 
 # Scrape only (no Copilot launch)
 node scrape-powerbi.js --quarter FY26Q3
@@ -55,7 +55,7 @@ The pipeline has three layers:
    - Scrolls through the Power BI report capturing screenshots + raw text
    - Sends both to Azure OpenAI (GPT-4o-mini via `DefaultAzureCredential`) for structured summarisation → `temp/final-metrics.md`
 
-2. **Prompt assembly & Copilot launch** (`run-connect.js`)
+2. **Prompt assembly & Copilot launch** (`baby-carlos.js`)
    - Merges the fleet instruction pack + summarised metrics into a single prompt file → `temp/fleet-prompt.txt`
    - Copies prompt to clipboard, verifies Copilot CLI auth, accepts WorkIQ EULA
    - Launches `copilot -i` with the merged prompt piped in
@@ -96,3 +96,4 @@ When following the fleet workflow, produce results in this order:
 2. Evidence ledger
 3. Gaps or follow-up questions
 4. Final Connect draft (first-person, strategic, evidence-backed)
+

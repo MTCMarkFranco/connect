@@ -40,7 +40,7 @@ Authentication uses `DefaultAzureCredential` (Entra ID) — no API key needed.
 ### Full pipeline (default recommended command)
 
 ```powershell
-node run-connect.js --quarter FY26Q3 --workiq-max-concurrency 3 --workiq-batch-size 3 --workiq-jitter-min-ms 1500 --workiq-jitter-max-ms 7000 --workiq-retries 3 --workiq-retry-backoff-ms 5000 --max-refine-passes 6
+node baby-carlos.js --quarter FY26Q3 --workiq-max-concurrency 3 --workiq-batch-size 3 --workiq-jitter-min-ms 1500 --workiq-jitter-max-ms 7000 --workiq-retries 3 --workiq-retry-backoff-ms 5000 --max-refine-passes 6
 ```
 ℹ️- At the end of the run just CTRL-C Twice to get out of Github Copilot CLI and you are done!
 
@@ -49,13 +49,13 @@ node run-connect.js --quarter FY26Q3 --workiq-max-concurrency 3 --workiq-batch-s
 ### Subsequent runs (headless)
 
 ```powershell
-node run-connect.js --quarter FY26Q3 --headless --workiq-max-concurrency 3 --workiq-batch-size 3 --workiq-jitter-min-ms 1500 --workiq-jitter-max-ms 7000 --workiq-retries 3 --workiq-retry-backoff-ms 5000 --max-refine-passes 6
+node baby-carlos.js --quarter FY26Q3 --headless --workiq-max-concurrency 3 --workiq-batch-size 3 --workiq-jitter-min-ms 1500 --workiq-jitter-max-ms 7000 --workiq-retries 3 --workiq-retry-backoff-ms 5000 --max-refine-passes 6
 ```
 
 ### Skip scraping (reuse existing metrics)
 
 ```powershell
-node run-connect.js --quarter FY26Q3 --skip-scrape
+node baby-carlos.js --quarter FY26Q3 --skip-scrape
 ```
 
 ### What happens
@@ -73,8 +73,8 @@ node run-connect.js --quarter FY26Q3 --skip-scrape
 Re-run the measuring-stick evaluation loop on an existing `Connect-Draft.md`:
 
 ```powershell
-node run-connect.js --refine-only --quarter FY26Q3
-node run-connect.js --refine-only --max-refine-passes 6 --quarter FY26Q3
+node baby-carlos.js --refine-only --quarter FY26Q3
+node baby-carlos.js --refine-only --max-refine-passes 6 --quarter FY26Q3
 ```
 
 ### Skip refinement
@@ -82,7 +82,7 @@ node run-connect.js --refine-only --max-refine-passes 6 --quarter FY26Q3
 Run the full pipeline but skip the post-Copilot refinement loop:
 
 ```powershell
-node run-connect.js --quarter FY26Q3 --skip-refine
+node baby-carlos.js --quarter FY26Q3 --skip-refine
 ```
 
 ### Set target score
@@ -90,7 +90,7 @@ node run-connect.js --quarter FY26Q3 --skip-refine
 By default the loop stops when 10/12 cells reach Exceptional. Override with:
 
 ```powershell
-node run-connect.js --refine-only --target-score 12 --quarter FY26Q3
+node baby-carlos.js --refine-only --target-score 12 --quarter FY26Q3
 ```
 
 ### WorkIQ timeout hardening profile (default)
@@ -98,7 +98,7 @@ node run-connect.js --refine-only --target-score 12 --quarter FY26Q3
 Use smaller WorkIQ batches, capped parallelism, and staggered calls with jitter:
 
 ```powershell
-node run-connect.js --quarter FY26Q3 --workiq-max-concurrency 3 --workiq-batch-size 3 --workiq-jitter-min-ms 1500 --workiq-jitter-max-ms 7000 --workiq-retries 3 --workiq-retry-backoff-ms 5000 --max-refine-passes 6
+node baby-carlos.js --quarter FY26Q3 --workiq-max-concurrency 3 --workiq-batch-size 3 --workiq-jitter-min-ms 1500 --workiq-jitter-max-ms 7000 --workiq-retries 3 --workiq-retry-backoff-ms 5000 --max-refine-passes 6
 ```
 
 Flags:
@@ -125,3 +125,4 @@ node scrape-powerbi.js --quarter FY26Q3 --headless   # headless
 - GitHub account with Copilot subscription
 - Azure OpenAI resource with a GPT-4o-mini deployment
 - Access to the Power BI report
+

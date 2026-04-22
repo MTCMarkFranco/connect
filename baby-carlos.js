@@ -353,6 +353,7 @@ function buildShortQueries(gap, quarter) {
 function generateWorkIQFleetPrompt(gaps, passNumber, quarter, options = {}) {
   const parallelLimit = options.parallelLimit || workiqMaxConcurrency;
   const batchLabel = options.batchLabel ? ` (${options.batchLabel})` : "";
+  const batchNumber = options.batchNumber || null;
 
   // Build workstreams with pre-built short queries
   const workstreams = gaps.map((gap, idx) => {
@@ -365,7 +366,11 @@ ${queryBlock}
 GOAL: Find evidence of HOW impact was made for this dimension.`;
   });
 
-  const evidenceFile = path.join(TEMP_DIR, `workiq-evidence-pass-${passNumber}.md`).replace(/\\/g, "/");
+  // Point Copilot at the batch-specific file so batches don't overwrite each other
+  const evidenceFileName = batchNumber
+    ? `workiq-evidence-pass-${passNumber}-batch-${batchNumber}.md`
+    : `workiq-evidence-pass-${passNumber}.md`;
+  const evidenceFile = path.join(TEMP_DIR, evidenceFileName).replace(/\\/g, "/");
 
   return `Search WorkIQ to find evidence for a quarterly Connect (${quarter})${batchLabel}.
 
@@ -555,7 +560,11 @@ Your job is to convert the structured draft into a polished, natural first-perso
 CONVERSION RULES:
 - Write in first person throughout, as if the employee wrote this directly to their manager.
 - Use a confident, strategic, professional tone that showcases impact clearly.
-- Convert each evidence-ledger block into flowing narrative paragraphs. Do NOT use the labelled field format (Theme/Claim Summary/Period/etc.) in the output.
+- Convert each evidence-ledger block into flowing narrative paragraphs. Do NOT use the full labelled field format (Theme/Claim Summary/Period/etc.) in the output — EXCEPT for the two fields described below.
+- CRITICAL — "What I Did" and "How I Did It" callouts: For EVERY customer engagement or significant accomplishment described in the draft, you MUST include two clearly labelled inline callouts:
+  **What I did:** <1-2 sentences describing the outcome, deliverable, or result>
+  **How I did it:** <1-2 sentences describing the specific actions, decisions, methods, and behaviours that drove the outcome>
+  These two callouts must appear together immediately after the narrative paragraph(s) for each engagement. They should be concise, punchy, and manager-friendly. Do NOT skip these for any customer engagement.
 - Group related accomplishments naturally under section headings (e.g., "### Customer Impact at Scale", "### Azure Platform Breadth and Technical Leadership", "### Revenue and Consumption Impact", "### Thought Leadership and Community Contribution", "### Recognition and Coaching").
 - Preserve the existing document structure: "## Reflect on the Past: Results Delivered", "## Reflect on Recent Setbacks: Lessons Learned and Growth", "## Plan for the Future: Goals for the Upcoming Period".
 - Bold customer/org names on first mention (e.g., **Hydro One**).
@@ -614,8 +623,64 @@ WRITING RULES:
 OUTPUT:
 - Return the complete updated Connect draft in markdown. Nothing else — no preamble, no commentary.`;
 
-async function mergeEvidenceIntoDraft(client, deployment, draftContent, rubricContent, evidenceContent) {
-  console.log(`  Sending draft + evidence to LLM for merge...`);
+/**
+ * Split evidence into chunks that fit within the LLM's output-token budget.
+ * Splits on section boundaries (lines starting with #) to keep related
+ * evidence together. Default ~15K chars per chunk (~4K tokens) to leave
+ * ample headroom for the growing draft in the output budget.
+ */
+function chunkEvidence(evidenceContent, maxCharsPerChunk = 15000) {
+  const lines = evidenceContent.split("\n");
+  const chunks = [];
+  let current = [];
+  let currentLen = 0;
+
+  for (const line of lines) {
+    const isHeader = /^#{1,3}\s/.test(line);
+    // Start a new chunk if this header would push us over the limit
+    if (isHeader && currentLen > 0 && currentLen + line.length > maxCharsPerChunk) {
+      chunks.push(current.join("\n"));
+      current = [];
+      currentLen = 0;
+    }
+    current.push(line);
+    currentLen += line.length + 1;
+  }
+  if (current.length > 0) {
+    chunks.push(current.join("\n"));
+  }
+
+  // If no natural splits were found and the content exceeds the limit,
+  // fall back to hard splits at paragraph boundaries
+  if (chunks.length === 1 && chunks[0].length > maxCharsPerChunk) {
+    const paras = chunks[0].split(/\n\n+/);
+    const hardChunks = [];
+    let buf = [];
+    let bufLen = 0;
+    for (const para of paras) {
+      if (bufLen > 0 && bufLen + para.length > maxCharsPerChunk) {
+        hardChunks.push(buf.join("\n\n"));
+        buf = [];
+        bufLen = 0;
+      }
+      buf.push(para);
+      bufLen += para.length + 2;
+    }
+    if (buf.length > 0) hardChunks.push(buf.join("\n\n"));
+    return hardChunks;
+  }
+
+  return chunks;
+}
+
+/**
+ * Call the LLM to merge one evidence chunk into the draft.
+ * If finish_reason === "length" (output truncated), automatically split
+ * the chunk in half and retry each half sequentially.
+ * Returns the updated draft.
+ */
+async function mergeSingleChunk(client, deployment, draft, chunk, label, depth = 0) {
+  const MAX_SPLIT_DEPTH = 3;
 
   const response = await client.chat.completions.create({
     model: deployment,
@@ -624,8 +689,8 @@ async function mergeEvidenceIntoDraft(client, deployment, draftContent, rubricCo
       {
         role: "user",
         content:
-          `=== CURRENT CONNECT DRAFT ===\n\n${draftContent}\n\n=== END DRAFT ===\n\n` +
-          `=== EVIDENCE FILE ===\n\n${evidenceContent}\n\n=== END EVIDENCE ===\n\n` +
+          `=== CURRENT CONNECT DRAFT ===\n\n${draft}\n\n=== END DRAFT ===\n\n` +
+          `=== EVIDENCE FILE ===\n\n${chunk}\n\n=== END EVIDENCE ===\n\n` +
           `Merge the evidence into the draft. Structure every accomplishment using the labelled paragraph format (Theme, Claim Summary, Period, People / Orgs, What Did I Do, How I Did It, Business Value, Related Metric). No tables. Write in first person directly to the manager, as if personally authored by the employee. Exclude any meta/process language (including what was/was not found, search diagnostics, or model reasoning). Exclude all personal/non-work content (for example banking, mortgage renewal, personal finance, family, health, travel). Return the complete updated draft.`,
       },
     ],
@@ -633,14 +698,74 @@ async function mergeEvidenceIntoDraft(client, deployment, draftContent, rubricCo
     max_completion_tokens: 16384,
   });
 
+  const finishReason = response.choices[0].finish_reason;
   const merged = response.choices[0].message.content?.trim();
-  if (!merged) {
-    console.log(`  ⚠ LLM returned empty response. Draft unchanged.`);
-    return draftContent;
+
+  // CASE 1: Output was truncated — split and retry
+  if (finishReason === "length") {
+    console.log(`  ⚠ Output truncated${label} (finish_reason=length).`);
+    if (depth >= MAX_SPLIT_DEPTH) {
+      console.log(`  ⚠ Max split depth (${MAX_SPLIT_DEPTH}) reached${label}. Keeping current draft.`);
+      return draft;
+    }
+    const subChunks = chunkEvidence(chunk, Math.floor(chunk.length / 2));
+    console.log(`  ↳ Auto-splitting into ${subChunks.length} sub-chunks and retrying (depth ${depth + 1})...`);
+    let subDraft = draft;
+    for (let si = 0; si < subChunks.length; si++) {
+      const subLabel = `${label}→sub${si + 1}`;
+      console.log(`  Merging ${subLabel} (${subChunks[si].length} chars) into draft (${subDraft.length} chars)...`);
+      subDraft = await mergeSingleChunk(client, deployment, subDraft, subChunks[si], subLabel, depth + 1);
+    }
+    return subDraft;
   }
 
-  console.log(`  ✓ Merged draft received (${merged.length} chars)`);
+  // CASE 2: Empty response
+  if (!merged) {
+    console.log(`  ⚠ LLM returned empty response${label}. Keeping previous draft.`);
+    return draft;
+  }
+
+  // CASE 3: Suspiciously short — model may have dropped content
+  if (merged.length < draft.length * 0.7) {
+    console.log(`  ⚠ Merged output${label} suspiciously short (${merged.length} vs ${draft.length} chars).`);
+    if (depth >= MAX_SPLIT_DEPTH) {
+      console.log(`  ⚠ Max split depth reached. Keeping current draft.`);
+      return draft;
+    }
+    const subChunks = chunkEvidence(chunk, Math.floor(chunk.length / 2));
+    console.log(`  ↳ Auto-splitting into ${subChunks.length} sub-chunks and retrying (depth ${depth + 1})...`);
+    let subDraft = draft;
+    for (let si = 0; si < subChunks.length; si++) {
+      const subLabel = `${label}→sub${si + 1}`;
+      console.log(`  Merging ${subLabel} (${subChunks[si].length} chars) into draft (${subDraft.length} chars)...`);
+      subDraft = await mergeSingleChunk(client, deployment, subDraft, subChunks[si], subLabel, depth + 1);
+    }
+    return subDraft;
+  }
+
+  // CASE 4: Success
+  console.log(`  ✓ Merged draft${label} received (${merged.length} chars, finish_reason=${finishReason})`);
   return merged;
+}
+
+async function mergeEvidenceIntoDraft(client, deployment, draftContent, rubricContent, evidenceContent) {
+  const chunks = chunkEvidence(evidenceContent);
+
+  if (chunks.length === 1) {
+    console.log(`  Sending draft + evidence to LLM for merge (single chunk, ${evidenceContent.length} chars)...`);
+  } else {
+    console.log(`  Evidence is large (${evidenceContent.length} chars) — splitting into ${chunks.length} chunks for iterative merge.`);
+  }
+
+  let draft = draftContent;
+  for (let ci = 0; ci < chunks.length; ci++) {
+    const chunk = chunks[ci];
+    const label = chunks.length > 1 ? ` [chunk ${ci + 1}/${chunks.length}]` : "";
+    console.log(`  Merging evidence${label} (${chunk.length} chars) into draft (${draft.length} chars)...`);
+    draft = await mergeSingleChunk(client, deployment, draft, chunk, label);
+  }
+
+  return draft;
 }
 
 // ── Prose conversion with validation ───────────────────────────────────────
@@ -768,9 +893,9 @@ function cleanRefinementArtifacts() {
   }
 }
 
-// ── Main refinement loop ───────────────────────────────────────────────────
+// ── Main refinement (single pass) ──────────────────────────────────────────
 
-async function runRefinementLoop(draftPath, maxPasses) {
+async function runRefinementLoop(draftPath) {
   if (!fs.existsSync(MEASURING_STICK)) {
     console.error(`Error: Measuring stick not found at ${MEASURING_STICK}`);
     process.exit(1);
@@ -782,8 +907,6 @@ async function runRefinementLoop(draftPath, maxPasses) {
 
   const rubricContent = fs.readFileSync(MEASURING_STICK, "utf-8");
   let draftContent = fs.readFileSync(draftPath, "utf-8");
-  let bestDraftContent = draftContent;
-  let bestExceptionalCount = 0;
 
   // Clean up artifacts from previous refinement runs
   cleanRefinementArtifacts();
@@ -791,251 +914,125 @@ async function runRefinementLoop(draftPath, maxPasses) {
   console.log("Connecting to Azure OpenAI for measuring-stick evaluation...");
   const { client, deployment } = await createAzureOpenAIClient();
 
-  for (let pass = 1; pass <= maxPasses; pass++) {
-    console.log(`\n${"═".repeat(60)}`);
-    console.log(`REFINEMENT PASS ${pass}/${maxPasses} — Evaluating draft against measuring stick`);
-    console.log("═".repeat(60));
-
-    // Step 1: Evaluate
-    const evaluation = await evaluateDraft(client, deployment, draftContent, rubricContent);
-
-    // Save evaluation
-    const evalPath = path.join(TEMP_DIR, `evaluation-pass-${pass}.json`);
-    fs.writeFileSync(evalPath, JSON.stringify(evaluation, null, 2), "utf-8");
-    console.log(`  Evaluation saved → ${evalPath}`);
-
-    const exceptionalCount = printEvaluationSummary(evaluation, pass);
-
-    // Persist the best-known draft as soon as a pass-start evaluation improves.
-    // This prevents later merge reverts from falling back to an older, lower score.
-    if (exceptionalCount > bestExceptionalCount || pass === 1) {
-      if (exceptionalCount > bestExceptionalCount && pass > 1) {
-        console.log(`  ✓ New best baseline at pass start: ${bestExceptionalCount} → ${exceptionalCount} Exceptional.`);
-      }
-      bestExceptionalCount = exceptionalCount;
-      bestDraftContent = draftContent;
-    }
-
-    // Step 2: Check if target met
-    if (exceptionalCount >= TARGET_EXCEPTIONAL_CELLS) {
-      console.log(`\n✓ ${exceptionalCount}/12 cells at Exceptional (target: ${TARGET_EXCEPTIONAL_CELLS}). Refinement complete.`);
-      bestDraftContent = draftContent;
-      fs.writeFileSync(draftPath, bestDraftContent, "utf-8");
-      return;
-    }
-
-    // Step 3: Collect non-Exceptional cells
-    const gaps = evaluation.cells.filter((c) => c.rating !== "Exceptional");
-    console.log(`\n  ${gaps.length} cell(s) below Exceptional — launching WorkIQ evidence search...`);
-
-    // Step 3a: Seed gaps with user-context.txt hints (if the file exists)
-    // Rotate hints across gaps so each cell gets different user context
-    if (fs.existsSync(USER_CONTEXT_FILE)) {
-      const userContextLines = fs.readFileSync(USER_CONTEXT_FILE, "utf-8")
-        .split(/\r?\n/)
-        .map((l) => l.trim())
-        .filter(Boolean);
-      if (userContextLines.length > 0) {
-        for (let gi = 0; gi < gaps.length; gi++) {
-          // Rotate: each gap starts from a different offset in the hints array
-          const rotated = [];
-          for (let h = 0; h < userContextLines.length; h++) {
-            rotated.push(userContextLines[(gi * 2 + h) % userContextLines.length]);
-          }
-          const extra = rotated.join(", ");
-          gaps[gi].userContext = gaps[gi].userContext ? `${extra}, ${gaps[gi].userContext}` : extra;
-        }
-        console.log(`  Loaded ${userContextLines.length} hint(s) from user-context.txt, rotated across ${gaps.length} gap(s).`);
-      }
-    }
-
-    // Step 3b: Clarify ambiguous search terms interactively (pass 1 only)
-    if (!noClarify && pass === 1) {
-      await clarifySearchTerms(gaps);
-    }
-
-    // Step 4: Generate WorkIQ fleet prompts in smaller, jittered batches
-    const evidenceFilePath = path.join(TEMP_DIR, `workiq-evidence-pass-${pass}.md`);
-    const gapBatches = chunkArray(gaps, workiqBatchSize);
-    const batchEvidencePaths = [];
-
-    // Delete any stale pass-level evidence file so we can combine fresh batch files
-    if (fs.existsSync(evidenceFilePath)) {
-      fs.unlinkSync(evidenceFilePath);
-    }
-
-    console.log(`  WorkIQ batching enabled: ${gapBatches.length} batch(es), batch size ${workiqBatchSize}, concurrency cap ${workiqMaxConcurrency}`);
-    console.log(`  Jitter window: ${workiqJitterMinMs}-${workiqJitterMaxMs} ms; retries per batch: ${workiqRetries}`);
-
-    for (let batchIndex = 0; batchIndex < gapBatches.length; batchIndex++) {
-      const batchGaps = gapBatches[batchIndex];
-      const batchNumber = batchIndex + 1;
-      const batchLabel = `pass-${pass}-batch-${batchNumber}-of-${gapBatches.length}`;
-      const fleetPrompt = generateWorkIQFleetPrompt(batchGaps, pass, quarter, {
-        parallelLimit: workiqMaxConcurrency,
-        batchLabel,
-      });
-      const fleetPromptPath = path.join(TEMP_DIR, `workiq-fleet-prompt-pass-${pass}-batch-${batchNumber}.txt`);
-      const batchEvidencePath = path.join(TEMP_DIR, `workiq-evidence-pass-${pass}-batch-${batchNumber}.md`);
-      batchEvidencePaths.push(batchEvidencePath);
-
-      fs.writeFileSync(fleetPromptPath, fleetPrompt, "utf-8");
-      console.log(`\n  Batch ${batchNumber}/${gapBatches.length}: prompt saved → ${fleetPromptPath}`);
-      console.log(`  Batch ${batchNumber}/${gapBatches.length}: evidence target → ${batchEvidencePath}`);
-
-      if (fs.existsSync(batchEvidencePath)) {
-        fs.unlinkSync(batchEvidencePath);
-      }
-
-      const jitterMs = getWorkIQJitterMs();
-      if (batchNumber > 1 && jitterMs > 0) {
-        console.log(`  Staggering WorkIQ call by ${jitterMs} ms to reduce timeout contention...`);
-        await sleep(jitterMs);
-      }
-
-      let success = false;
-      for (let attempt = 0; attempt <= workiqRetries; attempt++) {
-        const attemptNumber = attempt + 1;
-        console.log(`  Launching Copilot for batch ${batchNumber}/${gapBatches.length} (attempt ${attemptNumber}/${workiqRetries + 1})...`);
-        const result = runCopilotEvidenceCapture(fleetPromptPath, batchEvidencePath);
-
-        if (result.ok) {
-          const source = result.fromFile ? "file" : "stdout";
-          console.log(`  ✓ Batch ${batchNumber} completed from ${source} (${result.bytes} bytes)`);
-          success = true;
-          break;
-        }
-
-        if (result.timedOut && attempt < workiqRetries) {
-          const backoff = workiqRetryBackoffMs * (attempt + 1);
-          const retryJitter = getWorkIQJitterMs();
-          console.log(`  ⚠ Batch ${batchNumber} hit MCP timeout signature. Retrying after ${backoff + retryJitter} ms...`);
-          await sleep(backoff + retryJitter);
-          continue;
-        }
-
-        if (!result.timedOut && attempt < workiqRetries) {
-          const retryJitter = getWorkIQJitterMs();
-          console.log(`  ⚠ Batch ${batchNumber} failed. Retrying after ${retryJitter} ms...`);
-          await sleep(retryJitter);
-          continue;
-        }
-
-        console.log(`  ⚠ Batch ${batchNumber} failed after ${workiqRetries + 1} attempt(s).`);
-        if (result.message) {
-          console.log(`    Last error: ${result.message}`);
-        }
-      }
-
-      if (!success) {
-        console.log(`  ⚠ Continuing with next batch; this batch may have partial evidence only.`);
-      }
-    }
-
-    // Check if Copilot already wrote the pass-level evidence file directly via its file tools.
-    // If so, prefer that over the batch stdout transcripts (which contain tool-call logs, not structured evidence).
-    const copilotWroteDirectly = fs.existsSync(evidenceFilePath)
-      && fs.statSync(evidenceFilePath).size > 500
-      && !/^●\s|ask_work_iq|MCP error/m.test(fs.readFileSync(evidenceFilePath, "utf-8").substring(0, 2000));
-
-    if (copilotWroteDirectly) {
-      console.log(`\n  ✓ Copilot wrote evidence directly → ${evidenceFilePath} (${fs.statSync(evidenceFilePath).size} bytes) — skipping batch combination.`);
-    } else {
-      const combinedBatchEvidence = [];
-      for (let i = 0; i < batchEvidencePaths.length; i++) {
-        const batchPath = batchEvidencePaths[i];
-        if (!fs.existsSync(batchPath)) continue;
-        const content = fs.readFileSync(batchPath, "utf-8").trim();
-        if (!content) continue;
-        combinedBatchEvidence.push(`# Batch ${i + 1}\n\n${content}`);
-      }
-
-      if (combinedBatchEvidence.length > 0) {
-        const joined = combinedBatchEvidence.join("\n\n---\n\n") + "\n";
-        fs.writeFileSync(evidenceFilePath, joined, "utf-8");
-        console.log(`\n  ✓ Combined pass evidence saved → ${evidenceFilePath} (${joined.length} chars)`);
-      }
-    }
-
-    // Step 6: Read gathered evidence
-    if (!fs.existsSync(evidenceFilePath)) {
-      console.log(`\n  ⚠ Evidence file not found at ${evidenceFilePath}.`);
-      console.log(`    If Copilot saved it elsewhere, copy it to that path and run --refine-only.`);
-      console.log(`    Skipping merge for this pass (no evidence to integrate).\n`);
-    } else {
-      let evidenceContent = fs.readFileSync(evidenceFilePath, "utf-8");
-      const moreEvidencePath = path.join(__dirname, "more-evidence", "more-eveidence.md");
-      if (fs.existsSync(moreEvidencePath)) {
-        const moreEvidence = fs.readFileSync(moreEvidencePath, "utf-8");
-        evidenceContent += "\n\n# Additional Evidence\n\n" + moreEvidence;
-        console.log(`  ✓ Additional evidence loaded (${moreEvidence.length} chars)`);
-      }
-      console.log(`\n  ✓ Evidence file loaded (${evidenceContent.length} chars)`);
-
-      // Step 7: Merge evidence into draft
-      console.log(`  Merging new evidence into Connect draft...`);
-      const candidateDraft = await mergeEvidenceIntoDraft(
-        client, deployment, draftContent, rubricContent, evidenceContent
-      );
-
-      // Step 8: Re-evaluate the candidate draft and only keep if score improved
-      console.log(`  Re-evaluating merged draft...`);
-      const candidateEval = await evaluateDraft(client, deployment, candidateDraft, rubricContent);
-      const candidateCount = printEvaluationSummary(candidateEval, `${pass}-candidate`);
-
-      if (candidateCount > bestExceptionalCount) {
-        console.log(`\n  ✓ Score improved: ${bestExceptionalCount} → ${candidateCount} Exceptional. Keeping merged draft.`);
-        draftContent = candidateDraft;
-        bestDraftContent = candidateDraft;
-        bestExceptionalCount = candidateCount;
-      } else {
-        console.log(`\n  ⚠ Score did not improve (${candidateCount} vs best ${bestExceptionalCount}). Discarding this pass's merge.`);
-        draftContent = bestDraftContent; // revert to best known draft
-      }
-    }
-
-    // Save versioned draft (always the best so far)
-    const versionPath = path.join(TEMP_DIR, `Connect-Draft-v${pass}.md`);
-    fs.writeFileSync(versionPath, draftContent, "utf-8");
-    console.log(`  Refined draft saved → ${versionPath}`);
-  }
-
-  // Final evaluation after last pass
+  // ── Step 1: Evaluate ──────────────────────────────────────────────────
   console.log(`\n${"═".repeat(60)}`);
-  console.log(`FINAL EVALUATION — Post-refinement check`);
+  console.log("REFINEMENT — Evaluating draft against measuring stick");
   console.log("═".repeat(60));
 
-  const finalEval = await evaluateDraft(client, deployment, bestDraftContent, rubricContent);
-  const finalEvalPath = path.join(TEMP_DIR, `evaluation-final.json`);
+  const evaluation = await evaluateDraft(client, deployment, draftContent, rubricContent);
+  const evalPath = path.join(TEMP_DIR, "evaluation-pass-1.json");
+  fs.writeFileSync(evalPath, JSON.stringify(evaluation, null, 2), "utf-8");
+  console.log(`  Evaluation saved → ${evalPath}`);
+
+  const exceptionalCount = printEvaluationSummary(evaluation, 1);
+
+  if (exceptionalCount >= TARGET_EXCEPTIONAL_CELLS) {
+    console.log(`\n✓ ${exceptionalCount}/12 cells at Exceptional (target: ${TARGET_EXCEPTIONAL_CELLS}). No refinement needed.`);
+    fs.writeFileSync(draftPath, draftContent, "utf-8");
+    return;
+  }
+
+  // ── Step 2: Collect gaps and seed with user context ───────────────────
+  const gaps = evaluation.cells.filter((c) => c.rating !== "Exceptional");
+  console.log(`\n  ${gaps.length} cell(s) below Exceptional — launching WorkIQ evidence search...`);
+
+  if (fs.existsSync(USER_CONTEXT_FILE)) {
+    const userContextLines = fs.readFileSync(USER_CONTEXT_FILE, "utf-8")
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+    if (userContextLines.length > 0) {
+      for (let gi = 0; gi < gaps.length; gi++) {
+        const rotated = [];
+        for (let h = 0; h < userContextLines.length; h++) {
+          rotated.push(userContextLines[(gi * 2 + h) % userContextLines.length]);
+        }
+        const extra = rotated.join(", ");
+        gaps[gi].userContext = gaps[gi].userContext ? `${extra}, ${gaps[gi].userContext}` : extra;
+      }
+      console.log(`  Loaded ${userContextLines.length} hint(s) from user-context.txt.`);
+    }
+  }
+
+  if (!noClarify) {
+    await clarifySearchTerms(gaps);
+  }
+
+  // ── Step 3: Single WorkIQ evidence capture ────────────────────────────
+  const evidenceFilePath = path.join(TEMP_DIR, "workiq-evidence-pass-1.md");
+  const fleetPrompt = generateWorkIQFleetPrompt(gaps, 1, quarter, {
+    parallelLimit: workiqMaxConcurrency,
+  });
+  const fleetPromptPath = path.join(TEMP_DIR, "workiq-fleet-prompt-pass-1.txt");
+
+  fs.writeFileSync(fleetPromptPath, fleetPrompt, "utf-8");
+  console.log(`  Fleet prompt saved → ${fleetPromptPath}`);
+
+  if (fs.existsSync(evidenceFilePath)) {
+    fs.unlinkSync(evidenceFilePath);
+  }
+
+  console.log("  Launching Copilot CLI for evidence capture...");
+  const result = runCopilotEvidenceCapture(fleetPromptPath, evidenceFilePath);
+  if (result.ok) {
+    const source = result.fromFile ? "file" : "stdout";
+    console.log(`  ✓ Evidence capture completed from ${source} (${result.bytes} bytes)`);
+  } else {
+    console.log(`  ⚠ Evidence capture failed.`);
+    if (result.message) console.log(`    Error: ${result.message}`);
+  }
+
+  // ── Step 4: Merge evidence into draft ─────────────────────────────────
+  if (!fs.existsSync(evidenceFilePath)) {
+    console.log(`\n  ⚠ Evidence file not found at ${evidenceFilePath}.`);
+    console.log(`    Skipping merge (no evidence to integrate).\n`);
+  } else {
+    let evidenceContent = fs.readFileSync(evidenceFilePath, "utf-8");
+    const moreEvidencePath = path.join(__dirname, "more-evidence", "more-eveidence.md");
+    if (fs.existsSync(moreEvidencePath)) {
+      const moreEvidence = fs.readFileSync(moreEvidencePath, "utf-8");
+      evidenceContent += "\n\n# Additional Evidence\n\n" + moreEvidence;
+      console.log(`  ✓ Additional evidence loaded (${moreEvidence.length} chars)`);
+    }
+    console.log(`\n  ✓ Evidence file loaded (${evidenceContent.length} chars)`);
+
+    console.log("  Merging evidence into Connect draft...");
+    draftContent = await mergeEvidenceIntoDraft(
+      client, deployment, draftContent, rubricContent, evidenceContent
+    );
+  }
+
+  // ── Step 5: Final evaluation ──────────────────────────────────────────
+  console.log(`\n${"═".repeat(60)}`);
+  console.log("FINAL EVALUATION — Post-merge check");
+  console.log("═".repeat(60));
+
+  const finalEval = await evaluateDraft(client, deployment, draftContent, rubricContent);
+  const finalEvalPath = path.join(TEMP_DIR, "evaluation-final.json");
   fs.writeFileSync(finalEvalPath, JSON.stringify(finalEval, null, 2), "utf-8");
   const finalCount = printEvaluationSummary(finalEval, "final");
 
   if (finalCount >= TARGET_EXCEPTIONAL_CELLS) {
-    console.log(`\n✓ ${finalCount}/12 cells at Exceptional (target: ${TARGET_EXCEPTIONAL_CELLS}). Refinement complete.`);
+    console.log(`\n✓ ${finalCount}/12 cells at Exceptional (target: ${TARGET_EXCEPTIONAL_CELLS}).`);
   } else {
-    console.log(`\n⚠ ${finalCount}/12 cells at Exceptional after ${maxPasses} passes (target: ${TARGET_EXCEPTIONAL_CELLS}).`);
-    console.log(`  Review the remaining gaps in ${finalEvalPath} and consider:`);
-    console.log(`  - Adding missing evidence manually where [EVIDENCE NEEDED] placeholders appear`);
-    console.log(`  - Running again with --refine-only --max-refine-passes <N>`);
+    console.log(`\n⚠ ${finalCount}/12 cells at Exceptional (target: ${TARGET_EXCEPTIONAL_CELLS}).`);
+    console.log(`  Review gaps in ${finalEvalPath} and add evidence manually if needed.`);
   }
 
-  // Save the evidence-ledger version for reference
+  // ── Step 6: Save ledger + convert to prose ────────────────────────────
   const ledgerPath = path.join(TEMP_DIR, "Connect-Draft-ledger.md");
-  fs.writeFileSync(ledgerPath, bestDraftContent, "utf-8");
+  fs.writeFileSync(ledgerPath, draftContent, "utf-8");
   console.log(`\n  Ledger draft saved → ${ledgerPath}`);
 
-  // Convert to polished prose and validate score holds
   const { prose, score: proseScore } = await convertToProseAndValidate(
-    client, deployment, bestDraftContent, rubricContent
+    client, deployment, draftContent, rubricContent
   );
 
-  // Save prose evaluation
   const proseEval = await evaluateDraft(client, deployment, prose, rubricContent);
-  const proseEvalPath = path.join(TEMP_DIR, `evaluation-prose.json`);
+  const proseEvalPath = path.join(TEMP_DIR, "evaluation-prose.json");
   fs.writeFileSync(proseEvalPath, JSON.stringify(proseEval, null, 2), "utf-8");
   console.log(`  Prose evaluation saved → ${proseEvalPath}`);
 
-  // Overwrite the main draft with the prose version
   fs.writeFileSync(draftPath, prose, "utf-8");
   console.log(`  ✓ Final prose draft saved → ${draftPath} (score: ${proseScore}/12)`);
 }
@@ -1202,7 +1199,7 @@ if (wordOnly) {
   const draftPath = path.join(TEMP_DIR, "Connect-Draft.md");
 
   (async () => {
-    await runRefinementLoop(draftPath, maxRefinePasses);
+    await runRefinementLoop(draftPath);
 
     console.log("\n" + "═".repeat(60));
     console.log("Generating Word document from refined draft...");
@@ -1360,7 +1357,7 @@ if (fs.existsSync(draftPath)) {
   (async () => {
     // ── Step 5: Measuring-stick refinement loop ──────────────────────────────
     if (!skipRefine) {
-      await runRefinementLoop(draftPath, maxRefinePasses);
+      await runRefinementLoop(draftPath);
     } else {
       console.log("\nSkipping refinement loop (--skip-refine).");
     }

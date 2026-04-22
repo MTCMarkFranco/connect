@@ -617,9 +617,14 @@ async function runRefinementLoop(draftPath, maxPasses) {
 
     const exceptionalCount = printEvaluationSummary(evaluation, pass);
 
-    // Track baseline on first pass
-    if (pass === 1) {
+    // Persist the best-known draft as soon as a pass-start evaluation improves.
+    // This prevents later merge reverts from falling back to an older, lower score.
+    if (exceptionalCount > bestExceptionalCount || pass === 1) {
+      if (exceptionalCount > bestExceptionalCount && pass > 1) {
+        console.log(`  ✓ New best baseline at pass start: ${bestExceptionalCount} → ${exceptionalCount} Exceptional.`);
+      }
       bestExceptionalCount = exceptionalCount;
+      bestDraftContent = draftContent;
     }
 
     // Step 2: Check if target met

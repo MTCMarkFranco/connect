@@ -109,7 +109,14 @@ if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 //    repeat from step 1. The loop runs for at most --max-refine-passes
 //    iterations (default 3).
 //
-// 7. FINALIZE: The best version overwrites Connect-Draft.md.
+// 7. PROSE CONVERSION: After all refinement passes, convert the best-scoring
+//    evidence-ledger draft into polished first-person narrative prose. The
+//    prose version is re-evaluated to ensure the score holds; if it drops,
+//    the conversion is retried with feedback about what was lost.
+//
+// 8. FINALIZE: The ledger version is saved as Connect-Draft-ledger.md (for
+//    reference) and the prose version overwrites Connect-Draft.md. The Word
+//    doc is generated from the prose version.
 
 const TARGET_EXCEPTIONAL_CELLS = parseInt(getArg("--target-score") || "10", 10);
 
@@ -511,6 +518,32 @@ function cellToDraftSection(circle, dimension) {
   return sectionMap[circle]?.[dimension] || "### A. Reflect on the Past — Results Delivered and How";
 }
 
+const PROSE_CONVERSION_SYSTEM_PROMPT = `You are a senior performance-review writer. You will receive:
+1. A structured Connect draft in evidence-ledger format (with Theme, Claim Summary, Period, People/Orgs, What Did I Do, How I Did It, Business Value, Related Metric fields).
+2. The measuring-stick rubric for reference.
+
+Your job is to convert the structured draft into a polished, natural first-person narrative that reads as a professionally authored Connect document — ready for submission to a manager.
+
+CONVERSION RULES:
+- Write in first person throughout, as if the employee wrote this directly to their manager.
+- Use a confident, strategic, professional tone that showcases impact clearly.
+- Convert each evidence-ledger block into flowing narrative paragraphs. Do NOT use the labelled field format (Theme/Claim Summary/Period/etc.) in the output.
+- Group related accomplishments naturally under section headings (e.g., "### Customer Impact at Scale", "### Azure Platform Breadth and Technical Leadership", "### Revenue and Consumption Impact", "### Thought Leadership and Community Contribution", "### Recognition and Coaching").
+- Preserve the existing document structure: "## Reflect on the Past: Results Delivered", "## Reflect on Recent Setbacks: Lessons Learned and Growth", "## Plan for the Future: Goals for the Upcoming Period".
+- Bold customer/org names on first mention (e.g., **Hydro One**).
+- Keep every number, metric, date, and name exact — do not round, approximate, or reinterpret.
+- Do NOT invent or embellish. Only use content from the input draft.
+- Do NOT drop any evidence, claims, or metrics. Every item in the ledger must appear in the prose.
+- Do NOT include meta commentary about search quality, evidence coverage, rubric grading, model reasoning, or tool behavior.
+- Do NOT mention LLMs, prompts, evaluation logic, or process language.
+- Exclude personal-life content entirely.
+- The setbacks section should feel reflective and honest — lessons learned, not excuses.
+- The future goals section should feel forward-looking and action-oriented.
+- Use markdown formatting: # for title, ## for major sections, ### for subsections, **bold** for emphasis and names.
+
+OUTPUT:
+- Return the complete Connect draft as polished first-person narrative in markdown. Nothing else — no preamble, no commentary.`;
+
 const MERGE_SYSTEM_PROMPT = `You are a senior performance-review writer. You will receive:
 1. An existing quarterly Connect draft.
 2. An evidence file containing WorkIQ search results organised by rubric dimension.
@@ -582,6 +615,131 @@ async function mergeEvidenceIntoDraft(client, deployment, draftContent, rubricCo
   return merged;
 }
 
+// ── Prose conversion with validation ───────────────────────────────────────
+
+/**
+ * Convert a structured evidence-ledger draft into polished first-person
+ * narrative prose, then re-evaluate to ensure the score holds.
+ * If the prose version scores lower, retry up to maxRetries times with
+ * feedback about what was lost.
+ * Returns { prose, score } with the best prose version.
+ */
+async function convertToProseAndValidate(client, deployment, ledgerContent, rubricContent, maxRetries = 2) {
+  console.log(`\n${"═".repeat(60)}`);
+  console.log("PROSE CONVERSION — Converting evidence ledger to narrative");
+  console.log("═".repeat(60));
+
+  // Evaluate the ledger baseline score
+  console.log("  Evaluating ledger draft baseline...");
+  const ledgerEval = await evaluateDraft(client, deployment, ledgerContent, rubricContent);
+  const ledgerScore = ledgerEval.cells.filter((c) => c.rating === "Exceptional").length;
+  console.log(`  Ledger baseline: ${ledgerScore}/12 Exceptional`);
+
+  let bestProse = null;
+  let bestProseScore = 0;
+  let feedback = "";
+
+  for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+    console.log(`\n  Prose conversion attempt ${attempt}/${maxRetries + 1}...`);
+
+    const userContent = feedback
+      ? `=== STRUCTURED CONNECT DRAFT ===\n\n${ledgerContent}\n\n=== END DRAFT ===\n\n=== RUBRIC ===\n\n${rubricContent}\n\n=== END RUBRIC ===\n\nCONVERSION FEEDBACK FROM PREVIOUS ATTEMPT:\n${feedback}\n\nConvert the structured draft to polished first-person narrative prose. Address the feedback above — ensure no evidence or "how" detail is lost. Return the complete Connect draft.`
+      : `=== STRUCTURED CONNECT DRAFT ===\n\n${ledgerContent}\n\n=== END DRAFT ===\n\n=== RUBRIC ===\n\n${rubricContent}\n\n=== END RUBRIC ===\n\nConvert the structured draft to polished first-person narrative prose. Return the complete Connect draft.`;
+
+    const response = await client.chat.completions.create({
+      model: deployment,
+      messages: [
+        { role: "system", content: PROSE_CONVERSION_SYSTEM_PROMPT },
+        { role: "user", content: userContent },
+      ],
+      temperature: 0.3,
+      max_completion_tokens: 16384,
+    });
+
+    const prose = response.choices[0].message.content?.trim();
+    if (!prose) {
+      console.log(`  ⚠ LLM returned empty prose. Skipping attempt.`);
+      continue;
+    }
+    console.log(`  ✓ Prose draft received (${prose.length} chars)`);
+
+    // Evaluate the prose version
+    console.log(`  Evaluating prose draft...`);
+    const proseEval = await evaluateDraft(client, deployment, prose, rubricContent);
+    const proseScore = proseEval.cells.filter((c) => c.rating === "Exceptional").length;
+    printEvaluationSummary(proseEval, `prose-attempt-${attempt}`);
+
+    if (proseScore > bestProseScore) {
+      bestProse = prose;
+      bestProseScore = proseScore;
+    }
+
+    if (proseScore >= ledgerScore) {
+      console.log(`\n  ✓ Prose conversion maintained score (${proseScore}/${ledgerScore}). Accepting.`);
+      return { prose, score: proseScore };
+    }
+
+    // Build feedback for next attempt: which cells dropped?
+    const droppedCells = proseEval.cells.filter((pc) => {
+      const lc = ledgerEval.cells.find(
+        (l) => l.circle === pc.circle && l.dimension === pc.dimension
+      );
+      return lc && lc.rating === "Exceptional" && pc.rating !== "Exceptional";
+    });
+
+    if (droppedCells.length > 0) {
+      feedback = `The prose version dropped these cells from Exceptional:\n` +
+        droppedCells.map((c) =>
+          `- [${c.circle} → ${c.dimension}]: ${c.reasoning}\n  Missing: ${c.improvement}`
+        ).join("\n") +
+        `\n\nEnsure the prose retains all the specific evidence, "how" detail, metrics, and actions that support Exceptional ratings for these cells.`;
+      console.log(`\n  ⚠ Prose scored ${proseScore} vs ledger ${ledgerScore}. ${droppedCells.length} cell(s) dropped. Retrying with feedback...`);
+    } else {
+      console.log(`\n  ⚠ Prose scored ${proseScore} vs ledger ${ledgerScore}. Retrying...`);
+      feedback = `The prose version scored lower than the ledger (${proseScore} vs ${ledgerScore}). Ensure all evidence, metrics, "how" narratives, and specific actions are preserved in the prose conversion.`;
+    }
+  }
+
+  // Return best prose even if it didn't match ledger score
+  if (bestProse) {
+    console.log(`\n  ⚠ Best prose scored ${bestProseScore} vs ledger ${ledgerScore}. Using best prose version.`);
+    return { prose: bestProse, score: bestProseScore };
+  }
+
+  // Fallback: return ledger content if all prose attempts failed
+  console.log(`\n  ⚠ All prose conversions failed. Keeping ledger format.`);
+  return { prose: ledgerContent, score: ledgerScore };
+}
+
+// ── Clean up previous refinement artifacts ─────────────────────────────────
+
+function cleanRefinementArtifacts() {
+  const patterns = [
+    /^Connect-Draft-v\d+\.md$/,
+    /^Connect-Draft-ledger\.md$/,
+    /^evaluation-pass-\d+\.json$/,
+    /^evaluation-final\.json$/,
+    /^evaluation-prose\.json$/,
+    /^workiq-evidence-pass-\d+(-batch-\d+)?\.md$/,
+    /^workiq-fleet-prompt-pass-\d+(-batch-\d+)?\.txt$/,
+  ];
+
+  if (!fs.existsSync(TEMP_DIR)) return;
+
+  const files = fs.readdirSync(TEMP_DIR);
+  let removed = 0;
+  for (const file of files) {
+    if (patterns.some((p) => p.test(file))) {
+      fs.unlinkSync(path.join(TEMP_DIR, file));
+      removed++;
+    }
+  }
+
+  if (removed > 0) {
+    console.log(`  🧹 Cleaned ${removed} artifact(s) from previous refinement runs.`);
+  }
+}
+
 // ── Main refinement loop ───────────────────────────────────────────────────
 
 async function runRefinementLoop(draftPath, maxPasses) {
@@ -598,6 +756,9 @@ async function runRefinementLoop(draftPath, maxPasses) {
   let draftContent = fs.readFileSync(draftPath, "utf-8");
   let bestDraftContent = draftContent;
   let bestExceptionalCount = 0;
+
+  // Clean up artifacts from previous refinement runs
+  cleanRefinementArtifacts();
 
   console.log("Connecting to Azure OpenAI for measuring-stick evaluation...");
   const { client, deployment } = await createAzureOpenAIClient();
@@ -799,8 +960,25 @@ async function runRefinementLoop(draftPath, maxPasses) {
     console.log(`  - Running again with --refine-only --max-refine-passes <N>`);
   }
 
-  // Overwrite the main draft with the best version
-  fs.writeFileSync(draftPath, bestDraftContent, "utf-8");
+  // Save the evidence-ledger version for reference
+  const ledgerPath = path.join(TEMP_DIR, "Connect-Draft-ledger.md");
+  fs.writeFileSync(ledgerPath, bestDraftContent, "utf-8");
+  console.log(`\n  Ledger draft saved → ${ledgerPath}`);
+
+  // Convert to polished prose and validate score holds
+  const { prose, score: proseScore } = await convertToProseAndValidate(
+    client, deployment, bestDraftContent, rubricContent
+  );
+
+  // Save prose evaluation
+  const proseEval = await evaluateDraft(client, deployment, prose, rubricContent);
+  const proseEvalPath = path.join(TEMP_DIR, `evaluation-prose.json`);
+  fs.writeFileSync(proseEvalPath, JSON.stringify(proseEval, null, 2), "utf-8");
+  console.log(`  Prose evaluation saved → ${proseEvalPath}`);
+
+  // Overwrite the main draft with the prose version
+  fs.writeFileSync(draftPath, prose, "utf-8");
+  console.log(`  ✓ Final prose draft saved → ${draftPath} (score: ${proseScore}/12)`);
 }
 
 // ── Generate Word doc from markdown ────────────────────────────────────────
@@ -940,12 +1118,21 @@ if (wordOnly) {
       client, deployment, draftContent, rubricContent, evidenceContent
     );
 
-    fs.writeFileSync(draftPath, draftContent, "utf-8");
-    console.log(`\n✓ Merged draft saved → ${draftPath}`);
+    // Save ledger version
+    const ledgerPath = path.join(TEMP_DIR, "Connect-Draft-ledger.md");
+    fs.writeFileSync(ledgerPath, draftContent, "utf-8");
+    console.log(`\n✓ Merged ledger draft saved → ${ledgerPath}`);
+
+    // Convert to prose and validate
+    const { prose } = await convertToProseAndValidate(
+      client, deployment, draftContent, rubricContent
+    );
+    fs.writeFileSync(draftPath, prose, "utf-8");
+    console.log(`✓ Prose draft saved → ${draftPath}`);
 
     console.log("\nGenerating Word document...");
     const wordPath = path.join(TEMP_DIR, "final.docx");
-    await generateWordDoc(draftContent, wordPath);
+    await generateWordDoc(prose, wordPath);
     console.log(`✓ Word document saved → ${wordPath}`);
   })().catch((err) => {
     console.error("Merge failed:", err.message);

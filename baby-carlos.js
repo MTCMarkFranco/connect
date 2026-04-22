@@ -932,19 +932,29 @@ async function runRefinementLoop(draftPath, maxPasses) {
       }
     }
 
-    const combinedBatchEvidence = [];
-    for (let i = 0; i < batchEvidencePaths.length; i++) {
-      const batchPath = batchEvidencePaths[i];
-      if (!fs.existsSync(batchPath)) continue;
-      const content = fs.readFileSync(batchPath, "utf-8").trim();
-      if (!content) continue;
-      combinedBatchEvidence.push(`# Batch ${i + 1}\n\n${content}`);
-    }
+    // Check if Copilot already wrote the pass-level evidence file directly via its file tools.
+    // If so, prefer that over the batch stdout transcripts (which contain tool-call logs, not structured evidence).
+    const copilotWroteDirectly = fs.existsSync(evidenceFilePath)
+      && fs.statSync(evidenceFilePath).size > 500
+      && !/^●\s|ask_work_iq|MCP error/m.test(fs.readFileSync(evidenceFilePath, "utf-8").substring(0, 2000));
 
-    if (combinedBatchEvidence.length > 0) {
-      const joined = combinedBatchEvidence.join("\n\n---\n\n") + "\n";
-      fs.writeFileSync(evidenceFilePath, joined, "utf-8");
-      console.log(`\n  ✓ Combined pass evidence saved → ${evidenceFilePath} (${joined.length} chars)`);
+    if (copilotWroteDirectly) {
+      console.log(`\n  ✓ Copilot wrote evidence directly → ${evidenceFilePath} (${fs.statSync(evidenceFilePath).size} bytes) — skipping batch combination.`);
+    } else {
+      const combinedBatchEvidence = [];
+      for (let i = 0; i < batchEvidencePaths.length; i++) {
+        const batchPath = batchEvidencePaths[i];
+        if (!fs.existsSync(batchPath)) continue;
+        const content = fs.readFileSync(batchPath, "utf-8").trim();
+        if (!content) continue;
+        combinedBatchEvidence.push(`# Batch ${i + 1}\n\n${content}`);
+      }
+
+      if (combinedBatchEvidence.length > 0) {
+        const joined = combinedBatchEvidence.join("\n\n---\n\n") + "\n";
+        fs.writeFileSync(evidenceFilePath, joined, "utf-8");
+        console.log(`\n  ✓ Combined pass evidence saved → ${evidenceFilePath} (${joined.length} chars)`);
+      }
     }
 
     // Step 6: Read gathered evidence

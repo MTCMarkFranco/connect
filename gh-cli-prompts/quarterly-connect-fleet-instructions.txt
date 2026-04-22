@@ -67,6 +67,7 @@ Helpful search concepts and synonyms:
 - awards received: award, recognition, winner, nominated, spotlight, celebrated, congratulations
 - setbacks and growth: issue, challenge, risk, concern, setback, learned, lesson, adjusted, adapted, improved
 - licensing and revenue: consumption, ACR, Azure consumption, Fabric consumption, usage, spend, revenue, pipeline, opportunity
+- personal actions and methods: built, designed, architected, prototyped, presented, facilitated, led, organized, deployed, created, authored, demonstrated, reviewed, proposed, implemented, configured, migrated, developed, coached, delivered, handed off, followed up
 
 PARALLEL WORKSTREAMS FOR /FLEET
 When possible, split the job into these parallel workstreams:
@@ -79,20 +80,25 @@ When possible, split the job into these parallel workstreams:
 
 2. Customer impact evidence
    - Search WorkIQ for concrete examples tied to customer value, decision-making, opportunity progression, trusted-advisor moments, follow-up actions, and measurable outcomes.
-   - Find examples that show how the work was done, not just what was delivered.
+   - For every example, explicitly identify: (a) what the author personally did — their specific actions, decisions, and deliverables; (b) how they did it — the technical approach, methodology, tools, architecture patterns, or frameworks used; (c) why it mattered — the business outcome or customer value created.
+   - Search for action-oriented evidence: presentations delivered, architectures designed, prototypes built, workshops facilitated, code written, reviews conducted, solutions deployed, proposals created, demos given, and handoffs executed.
+   - Look for follow-up threads and replies that reveal the author's approach, reasoning, and problem-solving process — not just the final result.
    - Prioritise evidence involving Azure platform services (AKS, ARO, Cosmos DB, Fabric, AI Search, Foundry, App Service, Functions, SQL, Redis, Integration Services, AI Landing Zones, Agentic AI) and developer tooling (Azure DevOps, GitHub, GitHub Copilot).
 
 3. Community and event evidence
    - Search for community contributions, internal enablement, cross-team leadership, external events, hackathons, conferences, and hosted sessions.
    - Capture who benefited and what changed because of the contribution.
+   - For each contribution, identify what the author specifically did (organized, presented, built, facilitated, mentored) and how they did it (format, content, approach, tools used).
 
 4. Recognition, kudos, and coaching evidence
    - Find kudos given to others, coaching delivered, coaching received, and awards or recognition received.
    - Separate giving impact from receiving recognition.
+   - For coaching delivered, capture what the author taught or helped with, and how they delivered the coaching (1:1 sessions, code reviews, pairing, written guides, live demos).
 
 5. Growth and setback evidence
    - Search for moments where plans changed, challenges appeared, or feedback led to a stronger outcome.
    - Identify growth signals that can support the reflection section.
+   - Capture what the author did differently after the setback — the specific adaptation, new approach, or changed behavior.
 
 6. Validation and synthesis
    - Merge all evidence.
@@ -112,6 +118,8 @@ Every material point should map to one or more records using this schema:
 - source_reference: subject, title, thread label, document name, or equivalent reference
 - date_or_period: exact date if known, otherwise rough period inside the quarter
 - people_or_orgs: key people, team, customer, or community involved
+- my_role: what the author specifically did — their personal actions, decisions, and contributions (e.g. "designed the architecture," "built the prototype," "led the workshop," "presented to executives"). If the evidence does not clearly show the author's personal involvement, note that as a gap.
+- approach_and_method: how the author did it — the technical approach, methodology, tools, frameworks, or strategies used (e.g. "built a multi-agent workflow using Azure AI Foundry and Semantic Kernel," "ran a design thinking session to align stakeholders," "created a reusable Bicep template for landing zones"). This field must go beyond the outcome to capture the craft.
 - concrete_example: the specific action, event, decision, or outcome
 - business_or_cultural_value: why this matters strategically
 - related_metric: metric text or number if connected to the supplied metrics
@@ -140,6 +148,8 @@ PART 2 - EVIDENCE LEDGER
 Provide a compact but detailed table or structured list with:
 - theme
 - claim_summary
+- my_role
+- approach_and_method
 - source_type
 - source_reference
 - date_or_period
@@ -166,9 +176,11 @@ C. Plan for the future
 Drafting guidance:
 - Write in first person.
 - Sound confident, specific, and thoughtful, not inflated.
-- Lead with business and customer outcomes.
+- Lead with business and customer outcomes, but always show how those outcomes were achieved.
+- For every significant result, the narrative must answer three questions: (1) What did I do? (2) How did I do it? (3) Why did it matter? Do not stop at the outcome — describe the craft, the approach, and the personal contribution.
 - Show how the work reflects Microsoft values, collaboration, leadership, and growth.
 - Use concrete examples and metrics naturally in the narrative.
+- Prefer specific technical and methodological detail over generic phrases like "drove impact" or "delivered value." Replace vague action verbs with precise ones: "designed," "built," "facilitated," "presented," "architected," "prototyped," "deployed," "coached," "authored."
 - For future goals, root the goals in the quarter's evidence and supplied priorities. If explicit future priorities were not supplied, propose grounded next-step goals and label them as recommended.
 
 MASTER /FLEET PROMPT
@@ -207,6 +219,8 @@ Execution instructions:
 6. For each evidence item, capture:
    - theme
    - claim summary
+   - my role (what I specifically did)
+   - approach and method (how I did it)
    - source type
    - source reference
    - date or period

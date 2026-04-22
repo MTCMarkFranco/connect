@@ -72,6 +72,7 @@ const FLEET_INSTRUCTIONS = path.join(ROOT, "gh-cli-prompts", "quarterly-connect-
 const FLEET_PROMPT_FILE = path.join(TEMP_DIR, "fleet-prompt.txt");
 const MEASURING_STICK = path.join(ROOT, "guidance", "measuring-stick.md");
 const MORE_EVIDENCE_DIR = path.join(ROOT, "more-evidence");
+const USER_CONTEXT_FILE = path.join(TEMP_DIR, "user-context.txt");
 
 if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
 
@@ -293,14 +294,22 @@ async function clarifySearchTerms(gaps) {
 
 /**
  * Build short, specific WorkIQ queries from a gap cell.
- * WorkIQ times out on long narrative queries, so keep each under ~15 words.
- * Returns an array of 2-3 short query strings.
+ * WorkIQ times out on long narrative queries, so keep each query to ONE
+ * concise topic (3-5 words) plus the date hint.
+ *
+ * Slot allocation:
+ *   - Up to 3 cell-specific searchTerms from the evaluation
+ *   - Up to 2 user-context hints from user-context.txt (always included)
+ *   - Dimension-based fallback if nothing else exists
+ *
+ * Returns up to 5 short query strings per cell.
  */
 function buildShortQueries(gap, quarter) {
+  const CELL_SLOTS = 3;
+  const USER_SLOTS = 2;
   const queries = [];
-  const terms = gap.searchTerms || [];
-  const userTerms = gap.userContext ? gap.userContext.split(/,\s*/) : [];
-  const allTerms = [...userTerms, ...terms].filter(Boolean);
+  const cellTerms = (gap.searchTerms || []).filter(Boolean);
+  const userTerms = gap.userContext ? gap.userContext.split(/,\s*/).filter(Boolean) : [];
 
   // Quarter date range for context
   const dateHint = quarter.replace("FY26Q3", "January–March 2026")
@@ -308,16 +317,26 @@ function buildShortQueries(gap, quarter) {
     .replace("FY26Q2", "October–December 2025")
     .replace("FY26Q1", "July–September 2025");
 
-  // Build queries from specific terms (max 3 queries per cell)
-  if (allTerms.length > 0) {
-    // Group terms into queries of 2-3 terms each
-    for (let i = 0; i < Math.min(allTerms.length, 6); i += 2) {
-      const chunk = allTerms.slice(i, i + 2).join(", ");
-      queries.push(`${chunk} ${dateHint}`);
+  // 1. Cell-specific terms (capped at CELL_SLOTS)
+  for (const term of cellTerms) {
+    if (queries.length >= CELL_SLOTS) break;
+    queries.push(`${term} ${dateHint}`);
+  }
+
+  // 2. User-context hints (guaranteed USER_SLOTS, skip duplicates)
+  const seen = new Set(queries.map((q) => q.toLowerCase()));
+  let userAdded = 0;
+  for (const hint of userTerms) {
+    if (userAdded >= USER_SLOTS) break;
+    const candidate = `${hint} ${dateHint}`;
+    if (!seen.has(candidate.toLowerCase())) {
+      queries.push(candidate);
+      seen.add(candidate.toLowerCase());
+      userAdded++;
     }
   }
 
-  // Fallback: dimension-based short query
+  // 3. Fallback: dimension-based short query
   if (queries.length === 0) {
     const dimQueries = {
       "Business Acumen": [`customer impact and Azure pipeline ${dateHint}`],
@@ -328,7 +347,7 @@ function buildShortQueries(gap, quarter) {
     queries.push(...(dimQueries[gap.dimension] || [`work accomplishments ${dateHint}`]));
   }
 
-  return queries.slice(0, 3); // Max 3 queries per cell
+  return queries;
 }
 
 function generateWorkIQFleetPrompt(gaps, passNumber, quarter, options = {}) {
@@ -799,6 +818,27 @@ async function runRefinementLoop(draftPath, maxPasses) {
     // Step 3: Collect non-Exceptional cells
     const gaps = evaluation.cells.filter((c) => c.rating !== "Exceptional");
     console.log(`\n  ${gaps.length} cell(s) below Exceptional — launching WorkIQ evidence search...`);
+
+    // Step 3a: Seed gaps with user-context.txt hints (if the file exists)
+    // Rotate hints across gaps so each cell gets different user context
+    if (fs.existsSync(USER_CONTEXT_FILE)) {
+      const userContextLines = fs.readFileSync(USER_CONTEXT_FILE, "utf-8")
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean);
+      if (userContextLines.length > 0) {
+        for (let gi = 0; gi < gaps.length; gi++) {
+          // Rotate: each gap starts from a different offset in the hints array
+          const rotated = [];
+          for (let h = 0; h < userContextLines.length; h++) {
+            rotated.push(userContextLines[(gi * 2 + h) % userContextLines.length]);
+          }
+          const extra = rotated.join(", ");
+          gaps[gi].userContext = gaps[gi].userContext ? `${extra}, ${gaps[gi].userContext}` : extra;
+        }
+        console.log(`  Loaded ${userContextLines.length} hint(s) from user-context.txt, rotated across ${gaps.length} gap(s).`);
+      }
+    }
 
     // Step 3b: Clarify ambiguous search terms interactively (pass 1 only)
     if (!noClarify && pass === 1) {

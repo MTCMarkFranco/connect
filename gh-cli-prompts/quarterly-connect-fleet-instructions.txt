@@ -38,6 +38,19 @@ NON-NEGOTIABLE RULES
 6. If evidence is weak, conflicting, or absent, surface a gap instead of filling it with generic language.
 7. The final narrative should emphasize strategic business value, customer outcomes, leadership, collaboration, growth, and culture impact.
 
+WORKIQ QUERY RULES
+WorkIQ queries must follow these rules to avoid timeouts:
+1. Keep each query SHORT — ideally under 15 words. Ask one focused question per call.
+2. Do NOT pack multiple topics, long synonym lists, or compound questions into a single query. Split them into separate calls.
+3. Use plain, natural language. Do not include parenthetical lists, boolean operators, or long enumerations.
+4. Good: "community events or workshops I organized" — Bad: "What community contributions, events, meetups, hackathons, conferences, workshops, summits, roundtables, or technical community sessions did I participate in?"
+5. If a WorkIQ call fails or times out, retry up to 3 times using a progressively shorter and simpler version of the query:
+   - Retry 1: Rephrase to under 10 words, removing qualifiers and context.
+   - Retry 2: Reduce to the single most important keyword or phrase (e.g. "hackathon" or "coaching feedback").
+   - Retry 3: Try the broadest single-word search that covers the intent (e.g. "events" or "kudos").
+6. If all 3 retries fail, log the gap and move on. Do not block the workflow on a single failed search.
+7. Prefer multiple small queries over one large query. For example, search "kudos I gave" and "coaching I delivered" as separate calls, not one combined query.
+
 REQUIRED SEARCH COVERAGE
 The workflow must explicitly search for and report on all of the following:
 - Customer outcomes and business impact (especially Azure consumption growth, Fabric consumption, and solution deployments)
@@ -57,17 +70,17 @@ Use WorkIQ searches that cover:
 - documents
 - Loop content
 
-Helpful search concepts and synonyms:
-- azure and platform work: AKS, ARO, Kubernetes, OpenShift, AI Search, Cognitive Search, Fabric, Synapse, SQL Database, Cosmos DB, Redis, App Service, Functions, Logic Apps, API Management, Service Bus, Event Grid, Event Hubs, Integration Services, Web App, React, Foundry, AI Foundry, Foundry IQ, agentic, agent, evaluation, model, AI Landing Zone, landing zone, well-architected, architecture, deployment, migration, modernization, consumption, ACR
-- devops and developer tools: Azure DevOps, GitHub, GitHub Copilot, CI/CD, pipeline, repo, pull request, code review, DevSecOps, Infrastructure as Code, Bicep, Terraform
-- community or events: community, event, meetup, technical community, hackathon, conference, tour, summit, workshop, roundtable, panel, volunteer
-- kudos given: thanks, thank you, kudos, shout-out, appreciation, appreciate, recognition, great job
-- coaching delivered: coach, mentoring, mentor, guidance, feedback, 1:1, review, helped, supported, taught
-- coaching received: feedback, mentor, coaching, advice, guidance, learned from, suggestion, recommendation
-- awards received: award, recognition, winner, nominated, spotlight, celebrated, congratulations
-- setbacks and growth: issue, challenge, risk, concern, setback, learned, lesson, adjusted, adapted, improved
-- licensing and revenue: consumption, ACR, Azure consumption, Fabric consumption, usage, spend, revenue, pipeline, opportunity
-- personal actions and methods: built, designed, architected, prototyped, presented, facilitated, led, organized, deployed, created, authored, demonstrated, reviewed, proposed, implemented, configured, migrated, developed, coached, delivered, handed off, followed up
+Helpful search vocabulary (use these as inspiration for focused queries — do NOT combine them into a single query):
+- azure and platform work: AKS, ARO, Kubernetes, AI Search, Fabric, SQL, Cosmos DB, Redis, App Service, Functions, Foundry, AI Landing Zone, agentic, consumption, ACR
+- devops and developer tools: Azure DevOps, GitHub, Copilot, CI/CD, pipeline, Bicep, Terraform
+- community or events: community, event, meetup, hackathon, conference, workshop, summit
+- kudos given: thanks, kudos, shout-out, appreciation, great job
+- coaching delivered: coach, mentor, guidance, feedback, 1:1, helped, taught
+- coaching received: feedback, mentor, coaching, advice, learned from
+- awards received: award, recognition, winner, nominated, spotlight
+- setbacks and growth: challenge, setback, lesson, adjusted, adapted, improved
+- licensing and revenue: consumption, ACR, Fabric consumption, revenue, pipeline, opportunity
+- personal actions and methods: built, designed, architected, prototyped, presented, facilitated, deployed, authored, demonstrated, reviewed, proposed, implemented
 
 PARALLEL WORKSTREAMS FOR /FLEET
 When possible, split the job into these parallel workstreams:

@@ -54,7 +54,7 @@ const noClarify = args.includes("--no-clarify");
 const mergeOnly = args.includes("--merge-only");
 const mergePass = parseInt(getArg("--merge-pass") || "1", 10);
 const workiqMaxConcurrency = Math.max(1, parseInt(getArg("--workiq-max-concurrency") || "4", 10));
-const workiqBatchSize = Math.max(1, parseInt(getArg("--workiq-batch-size") || String(workiqMaxConcurrency), 10));
+const workiqBatchSize = Math.max(1, parseInt(getArg("--workiq-batch-size") || "2", 10));
 const workiqJitterMinMs = Math.max(0, parseInt(getArg("--workiq-jitter-min-ms") || "1200", 10));
 const workiqJitterMaxMs = Math.max(workiqJitterMinMs, parseInt(getArg("--workiq-jitter-max-ms") || "6000", 10));
 const workiqRetries = Math.max(0, parseInt(getArg("--workiq-retries") || "2", 10));
@@ -376,6 +376,15 @@ IMPORTANT — QUERY RULES:
 - Run workstreams in parallel, but cap active workstreams at ${parallelLimit}.
 - Exclude personal/private life content completely. Ignore items such as banking, mortgage renewal, personal finance, family, health, travel, social plans, or non-work admin.
 - Include only work-relevant evidence tied to professional impact, delivery, collaboration, leadership, coaching, or community contributions.
+
+IMPORTANT — OUTPUT RULES:
+- Write evidence to the output file INCREMENTALLY — after completing each workstream, immediately append that workstream's evidence to the file. Do NOT wait until all workstreams are done.
+- Keep each evidence item CONCISE — 2-3 sentences max per field. Do NOT reproduce full WorkIQ response text.
+- If a WorkIQ call times out, retry up to 3 times with a shorter query:
+  Retry 1: rephrase under 10 words, drop qualifiers.
+  Retry 2: use only the single most important keyword or phrase.
+  Retry 3: use the broadest single word (e.g. "events", "kudos").
+  If all retries fail, log the gap and move on.
 
 ${workstreams.join("\n")}
 
